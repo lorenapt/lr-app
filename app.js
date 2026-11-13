@@ -32,6 +32,7 @@ function val(id) { var e = document.getElementById(id); if (!e) return null; var
 function num(id) { var v = val(id); return v === null ? null : Number(String(v).replace(",", ".")); }
 function fmtDate(d) { if (!d) return "—"; var p = String(d).slice(0, 10).split("-"); return p[2] + "/" + p[1] + "/" + p[0]; }
 function today() { var d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); }
+function n2(x) { return x === null || x === undefined ? "—" : String(x).replace(".", ","); }
 function euro(n) { return n === null || n === undefined ? "—" : "€ " + Number(n).toFixed(2).replace(".", ","); }
 function toast(msg) {
   var t = h("div", { class: "toast" }, msg); document.body.appendChild(t);
@@ -92,8 +93,8 @@ function lineChart(points, unit) {
     '<path d="' + d + '" fill="none" stroke="#B7787F" stroke-width="2.5" vector-effect="non-scaling-stroke"/>' +
     pts.map(function (p) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="#B7787F"/>'; }).join("") + "</svg>";
   return h("div", null, h("div", { html: svg }),
-    h("div", { class: "row small muted" }, h("span", null, fmtDate(points[0].x) + " · " + points[0].y + " " + unit),
-      h("span", null, fmtDate(points[points.length - 1].x) + " · " + points[points.length - 1].y + " " + unit)));
+    h("div", { class: "row small muted" }, h("span", null, fmtDate(points[0].x) + " · " + n2(points[0].y) + " " + unit),
+      h("span", null, fmtDate(points[points.length - 1].x) + " · " + n2(points[points.length - 1].y) + " " + unit)));
 }
 
 /* ---------- avvio e login ---------- */
@@ -317,7 +318,7 @@ async function workoutHistory(clientId) {
       h("div", { class: "row" }, h("h3", null, fmtDate(w.performed_on)), h("span", { class: "pill" }, w.program_days ? w.program_days.name : "Allenamento libero")),
       Object.keys(byEx).map(function (n) {
         return h("div", { class: "small", style: "margin:6px 0" }, h("strong", null, n + ": "),
-          byEx[n].map(function (s) { return (s.weight_kg !== null ? s.weight_kg + " kg" : "—") + " × " + (s.reps !== null ? s.reps : "—"); }).join(" · "),
+          byEx[n].map(function (s) { return (s.weight_kg !== null ? n2(s.weight_kg) + " kg" : "—") + " × " + (s.reps !== null ? s.reps : "—"); }).join(" · "),
           byEx[n].filter(function (s) { return s.notes; }).map(function (s) { return h("div", { class: "muted" }, "“" + s.notes + "”"); }));
       }),
       w.notes ? h("div", { class: "tip" }, w.notes) : null);
@@ -375,7 +376,7 @@ async function goalsView(clientId, adminClient) {
     return h("div", { class: "card" + (adminClient ? " tap" : ""), onclick: adminClient ? function () { editGoal(adminClient, g); } : null },
       h("div", { class: "row" }, h("h3", null, g.title), h("span", { class: "pill " + st[1] }, st[0])),
       g.description ? h("p", { class: "small" }, g.description) : null,
-      h("div", { class: "small muted" }, [g.target_value !== null ? "Traguardo: " + g.target_value + " " + (g.unit || "") : null, g.deadline ? "entro il " + fmtDate(g.deadline) : null, g.achieved_on ? "raggiunto il " + fmtDate(g.achieved_on) : null].filter(Boolean).join(" · ")));
+      h("div", { class: "small muted" }, [g.target_value !== null ? "Traguardo: " + n2(g.target_value) + " " + (g.unit || "") : null, g.deadline ? "entro il " + fmtDate(g.deadline) : null, g.achieved_on ? "raggiunto il " + fmtDate(g.achieved_on) : null].filter(Boolean).join(" · ")));
   });
 }
 function editGoal(c, g) {
@@ -618,7 +619,7 @@ VIEWS.workout = async function (v) {
     for (var s = 1; s <= n; s++) {
       var ps = pv && pv.sets[s];
       grid.appendChild(h("div", { class: "setn" }, s));
-      grid.appendChild(h("input", { id: "w_" + i + "_" + s, inputmode: "decimal", placeholder: ps && ps.weight_kg !== null ? String(ps.weight_kg) : "kg" }));
+      grid.appendChild(h("input", { id: "w_" + i + "_" + s, inputmode: "decimal", placeholder: ps && ps.weight_kg !== null ? n2(ps.weight_kg) : "kg" }));
       grid.appendChild(h("input", { id: "r_" + i + "_" + s, inputmode: "numeric", placeholder: ps && ps.reps !== null ? String(ps.reps) : (pe.reps || "rip.") }));
     }
     form.appendChild(h("div", { class: "card" },
@@ -659,7 +660,7 @@ async function saveWorkout(d, exs) {
   if (!sets.length && !val("wn")) { toast("Inserisci almeno una serie"); return false; }
   var w = await q(sb.from("workout_logs").insert({ client_id: S.me.id, day_id: d.id, performed_on: today(), notes: val("wn") }).select().single());
   if (sets.length) await q(sb.from("set_logs").insert(sets.map(function (x) { x.workout_log_id = w.id; return x; })));
-  toast("Allenamento salvato. Ottimo lavoro!"); go("progressi");
+  toast("Allenamento salvato. Ottimo lavoro!"); go(S.me.role === "admin" ? "clienti" : "progressi");
 }
 VIEWS.progressi = async function () {
   var sub = S.progSub || "diario";

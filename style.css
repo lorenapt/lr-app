@@ -43,6 +43,7 @@ label{display:block;font-size:.78rem;letter-spacing:.08em;text-transform:upperca
 input,select,textarea{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;outline:none}
 input:focus,select:focus,textarea:focus{border-color:var(--rose)}
 textarea{min-height:80px;resize:vertical}
+input::placeholder,textarea::placeholder{color:#C4B6B2;opacity:1}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:0 10px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:999px;padding:12px 22px;background:var(--rose);color:#fff;letter-spacing:.05em;cursor:pointer;font-weight:500}
