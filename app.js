@@ -71,9 +71,37 @@ function modal(title, body, onSave, saveLabel) {
   var first = m.querySelector("input,textarea,select"); if (first && window.innerWidth > 700) first.focus();
   return m;
 }
-function confirmDo(msg, fn) { if (window.confirm(msg)) fn(); }
+function confirmDo(msg, fn) {
+  var m = h("div", { class: "modal", style: "z-index:60;align-items:center" },
+    h("div", { class: "sheet", style: "max-width:420px;border-radius:22px" },
+      h("p", { style: "margin-top:0" }, msg),
+      h("div", { class: "row", style: "justify-content:flex-end;margin-top:14px" },
+        h("button", { class: "btn ghost sm", onclick: function () { m.remove(); } }, "Annulla"),
+        h("button", { class: "btn sm", style: "background:#A0524F", onclick: function () { m.remove(); fn(); } }, "Elimina"))));
+  document.body.appendChild(m);
+}
+var MAX_VIDEO = 50 * 1024 * 1024;
+function isStored(u) { return !!(u && u.indexOf("/object/public/videos/") > -1); }
+function removeVideo(url) { var m = url && url.match(/\/object\/public\/videos\/(.+)$/); if (m) sb.storage.from("videos").remove([decodeURIComponent(m[1])]); }
+async function uploadVideo(file, oldUrl) {
+  if (file.size > MAX_VIDEO) throw { message: "Video troppo pesante (" + Math.round(file.size / 1048576) + " MB, massimo 50 MB). Registra in 720p o accorcia la clip." };
+  var ext = (file.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp4";
+  var path = "esercizi/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
+  var b = $(".modal .btn.block:not(.ghost)"); if (b) b.textContent = "Caricamento video… attendi";
+  await q(sb.storage.from("videos").upload(path, file, { contentType: file.type || "video/mp4", cacheControl: "31536000" }));
+  if (oldUrl) removeVideo(oldUrl);
+  return sb.storage.from("videos").getPublicUrl(path).data.publicUrl;
+}
+function videoPicker(id, hasVideo) {
+  return h("div", null, h("label", { for: id }, "Video dell'esercizio"),
+    hasVideo ? h("div", { class: "small muted", style: "margin-bottom:6px" }, "Video già presente ✓ — caricane uno nuovo solo per sostituirlo") : null,
+    h("input", { id: id, type: "file", accept: "video/*" }),
+    h("div", { class: "small muted", style: "margin-top:4px" }, "Registralo ora o sceglilo dalla galleria. Massimo 50 MB (circa 1 minuto in 720p)."));
+}
+function pickedFile(id) { var e = document.getElementById(id); return e && e.files && e.files[0] ? e.files[0] : null; }
 function videoEmbed(url) {
   if (!url) return null;
+  if (isStored(url) || /\.(mp4|mov|webm|m4v)(\?|$)/i.test(url)) return h("video", { class: "vid", src: url, controls: true, playsinline: true, preload: "metadata" });
   var m = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{6,})/);
   if (m) return h("div", { class: "video" }, h("iframe", { src: "https://www.youtube-nocookie.com/embed/" + m[1], allow: "fullscreen; picture-in-picture", allowfullscreen: true, loading: "lazy" }));
   var v = url.match(/vimeo\.com\/(\d+)/);
@@ -226,7 +254,7 @@ CLIENT_SUB.scheda = async function (c, v) {
         var exs = (d.program_exercises || []).sort(function (a, b) { return a.position - b.position; });
         return h("div", { class: "ex" },
           h("div", { class: "row" }, h("strong", null, d.name),
-            h("span", null, h("button", { class: "link small", onclick: function () { editProgEx(c, d, null, exs.length); } }, "+ esercizio"), " ",
+            h("span", null, h("button", { class: "btn sm", onclick: function () { pickExercises(c, d, exs.length); } }, "+ Esercizi"), " ",
               h("button", { class: "link small", onclick: function () { editDay(c, p, d); } }, "modifica"))),
           d.notes ? h("div", { class: "small muted" }, d.notes) : null,
           exs.length ? h("div", { class: "list" }, exs.map(function (e) {
@@ -260,7 +288,8 @@ function editProgram(c, p) {
     if (p.id) await q(sb.from("programs").update(row).eq("id", p.id));
     else {
       var np = await q(sb.from("programs").insert(row).select().single());
-      await q(sb.from("program_days").insert({ program_id: np.id, name: "Giorno A", position: 0 }));
+      var nd = await q(sb.from("program_days").insert({ program_id: np.id, name: "Giorno A", position: 0 }).select().single());
+      reloadClient(c, "scheda"); pickExercises(c, nd, 0); return;
     }
     reloadClient(c, "scheda");
   });
@@ -282,13 +311,59 @@ function editDay(c, p, d, pos) {
     reloadClient(c, "scheda");
   });
 }
+async function pickExercises(c, d, pos) {
+  var exs = await q(sb.from("exercises").select("id,name,muscle_group,equipment,video_url").order("name"));
+  var chosen = [];
+  var list = h("div", { class: "list" }), count = h("div", { class: "small muted", style: "margin-top:10px" });
+  var draw = function () {
+    var f = ($("#pk_q") ? $("#pk_q").value : "").toLowerCase();
+    var groups = {};
+    exs.filter(function (x) { return !f || (x.name + " " + (x.muscle_group || "")).toLowerCase().indexOf(f) > -1; })
+      .forEach(function (x) { var g = x.muscle_group || "Altro"; (groups[g] = groups[g] || []).push(x); });
+    list.innerHTML = "";
+    Object.keys(groups).sort().forEach(function (g) {
+      list.appendChild(h("div", { class: "eyebrow", style: "margin:14px 0 0" }, g));
+      groups[g].forEach(function (x) {
+        var n = chosen.indexOf(x.id);
+        list.appendChild(h("div", { class: "item pick" + (n > -1 ? " on" : ""), onclick: function () {
+            if (n > -1) chosen.splice(n, 1); else chosen.push(x.id); draw();
+          } },
+          h("div", null, h("div", null, x.name), h("div", { class: "small muted" }, [x.equipment, x.video_url ? "▶ video" : null].filter(Boolean).join(" · "))),
+          h("span", { class: "chk" }, n > -1 ? String(n + 1) : "")));
+      });
+    });
+    if (!list.childNodes.length) list.appendChild(h("div", { class: "empty" }, exs.length ? "Nessun esercizio trovato." : "La libreria è vuota: crea il primo esercizio qui sotto."));
+    count.textContent = chosen.length ? "Selezionati: " + chosen.length + " (verranno aggiunti in quest'ordine)" : "Tocca gli esercizi da aggiungere alla scheda.";
+  };
+  modal("Libreria esercizi", [
+    h("div", { class: "small muted" }, "Giorno: " + d.name),
+    h("input", { id: "pk_q", type: "search", placeholder: "Cerca esercizio o gruppo muscolare…", oninput: function () { draw(); }, style: "margin-top:10px" }),
+    h("div", { class: "grid2" }, field("Serie per ciascuno", "pk_s", "number", 3, { inputmode: "numeric" }), field("Ripetizioni", "pk_r", "text", "10")),
+    count, list,
+    h("button", { class: "btn ghost block", onclick: function () { document.querySelector(".modal").remove(); editProgEx(c, d, null, pos); } }, "+ Crea nuovo esercizio (con video)")
+  ], async function () {
+    if (!chosen.length) { toast("Seleziona almeno un esercizio"); return false; }
+    var s = num("pk_s"), r = val("pk_r");
+    await q(sb.from("program_exercises").insert(chosen.map(function (id, i) { return { day_id: d.id, exercise_id: id, sets: s, reps: r, position: (pos || 0) + i }; })));
+    toast(chosen.length + (chosen.length === 1 ? " esercizio aggiunto" : " esercizi aggiunti") + ". Tocca un esercizio per carico e consigli.");
+    reloadClient(c, "scheda");
+  }, "Aggiungi alla scheda");
+  draw();
+}
 async function editProgEx(c, d, e, pos) {
   e = e || {};
-  var exs = await q(sb.from("exercises").select("id,name,muscle_group").order("name"));
-  if (!exs.length) { toast("Prima aggiungi degli esercizi nella libreria"); return go("esercizi"); }
-  modal(e.id ? "Modifica esercizio" : "Aggiungi esercizio", [
-    select("Esercizio", "pe_x", exs.map(function (x) { return [x.id, x.name + (x.muscle_group ? " (" + x.muscle_group + ")" : "")]; }), e.exercise_id),
-    h("div", { class: "grid3" }, field("Serie", "pe_s", "number", e.sets, { inputmode: "numeric" }), field("Ripetizioni", "pe_r", "text", e.reps, { placeholder: "8-12" }), field("Recupero (sec)", "pe_rest", "number", e.rest_seconds, { inputmode: "numeric" })),
+  var exs = await q(sb.from("exercises").select("id,name,muscle_group,video_url").order("name"));
+  var opts = exs.map(function (x) { return [x.id, x.name + (x.muscle_group ? " (" + x.muscle_group + ")" : "") + (x.video_url ? " ▶" : "")]; });
+  opts.push(["__new", "+ Nuovo esercizio…"]);
+  var newBox = h("div", { style: "display:none" },
+    field("Nome del nuovo esercizio", "pe_nn", "text", "", { placeholder: "es. Hip thrust con bilanciere" }),
+    field("Gruppo muscolare", "pe_ng", "text", "", { placeholder: "Glutei" }),
+    field("Consigli di esecuzione", "pe_nt", "textarea"));
+  var hint = h("div");
+  modal(e.id ? "Modifica esercizio" : "Nuovo esercizio nella scheda", [
+    select("Esercizio", "pe_x", opts, e.exercise_id || "__new"),
+    newBox, hint,
+    h("div", { class: "grid3" }, field("Serie", "pe_s", "number", e.id ? e.sets : 3, { inputmode: "numeric" }), field("Ripetizioni", "pe_r", "text", e.id ? e.reps : "10", { placeholder: "8-12" }), field("Recupero (sec)", "pe_rest", "number", e.rest_seconds, { inputmode: "numeric" })),
     field("Carico indicativo", "pe_l", "text", e.target_load, { placeholder: "es. 10 kg, RPE 7" }),
     field("Consiglio per questo cliente", "pe_n", "textarea", e.notes),
     field("Ordine", "pe_p", "number", e.id ? e.position : pos),
@@ -296,12 +371,30 @@ async function editProgEx(c, d, e, pos) {
       confirmDo("Togliere questo esercizio dal giorno?", async function () {
         try { await q(sb.from("program_exercises").delete().eq("id", e.id)); document.querySelector(".modal").remove(); reloadClient(c, "scheda"); } catch (er) { fail(er); }
       });
-    } }, "Rimuovi") : null
+    } }, "Rimuovi dalla scheda") : null
   ], async function () {
-    var row = { day_id: d.id, exercise_id: $("#pe_x").value, sets: num("pe_s"), reps: val("pe_r"), rest_seconds: num("pe_rest"), target_load: val("pe_l"), notes: val("pe_n"), position: num("pe_p") || 0 };
+    var exId = $("#pe_x").value, f = pickedFile("pe_file");
+    if (exId === "__new") {
+      var nn = val("pe_nn"); if (!nn) { toast("Inserisci il nome del nuovo esercizio"); return false; }
+      var url = f ? await uploadVideo(f, null) : null;
+      var ne = await q(sb.from("exercises").insert({ name: nn, muscle_group: val("pe_ng"), tips: val("pe_nt"), video_url: url }).select().single());
+      exId = ne.id;
+    } else if (f) {
+      var cur = exs.filter(function (x) { return x.id === exId; })[0];
+      var nu = await uploadVideo(f, cur && isStored(cur.video_url) ? cur.video_url : null);
+      await q(sb.from("exercises").update({ video_url: nu }).eq("id", exId));
+    }
+    var row = { day_id: d.id, exercise_id: exId, sets: num("pe_s"), reps: val("pe_r"), rest_seconds: num("pe_rest"), target_load: val("pe_l"), notes: val("pe_n"), position: num("pe_p") || 0 };
     if (e.id) await q(sb.from("program_exercises").update(row).eq("id", e.id)); else await q(sb.from("program_exercises").insert(row));
     reloadClient(c, "scheda");
   });
+  var sel = $("#pe_x");
+  var sync = function () {
+    newBox.style.display = sel.value === "__new" ? "" : "none";
+    var cur = exs.filter(function (x) { return x.id === sel.value; })[0];
+    hint.innerHTML = ""; hint.appendChild(videoPicker("pe_file", !!(cur && cur.video_url)));
+  };
+  sel.addEventListener("change", sync); sync();
 }
 
 /* --- diario (visto dall'admin) --- */
@@ -535,17 +628,21 @@ function editExercise(e) {
     h("div", { class: "grid2" }, field("Gruppo muscolare", "ex_g", "text", e.muscle_group, { placeholder: "Glutei" }), field("Attrezzatura", "ex_e", "text", e.equipment, { placeholder: "Bilanciere" })),
     field("Descrizione", "ex_d", "textarea", e.description),
     field("Consigli di esecuzione", "ex_t", "textarea", e.tips),
-    field("Link video (YouTube/Vimeo)", "ex_v", "url", e.video_url, { placeholder: "https://youtu.be/…" }),
-    h("p", { class: "small muted" }, "Consiglio: carica i video su YouTube come “non in elenco” e incolla qui il link."),
+    videoPicker("ex_file", !!e.video_url),
+    field("Oppure link YouTube/Vimeo", "ex_v", "url", isStored(e.video_url) ? "" : e.video_url, { placeholder: "https://youtu.be/…" }),
     e.id ? h("button", { class: "btn danger sm", style: "margin-top:16px", onclick: function () {
       confirmDo("Eliminare l'esercizio dalla libreria?", async function () {
-        try { await q(sb.from("exercises").delete().eq("id", e.id)); document.querySelector(".modal").remove(); go("esercizi"); }
+        try { await q(sb.from("exercises").delete().eq("id", e.id)); removeVideo(e.video_url); document.querySelector(".modal").remove(); go("esercizi"); }
         catch (er) { toast("Non eliminabile: è usato in una scheda"); }
       });
     } }, "Elimina") : null
   ], async function () {
-    var row = { name: val("ex_n"), muscle_group: val("ex_g"), equipment: val("ex_e"), description: val("ex_d"), tips: val("ex_t"), video_url: val("ex_v") };
+    var row = { name: val("ex_n"), muscle_group: val("ex_g"), equipment: val("ex_e"), description: val("ex_d"), tips: val("ex_t") };
     if (!row.name) { toast("Inserisci il nome"); return false; }
+    var f = pickedFile("ex_file"), link = val("ex_v");
+    if (f) row.video_url = await uploadVideo(f, isStored(e.video_url) ? e.video_url : null);
+    else if (link) { row.video_url = link; if (isStored(e.video_url)) removeVideo(e.video_url); }
+    else row.video_url = isStored(e.video_url) ? e.video_url : null;
     if (e.id) await q(sb.from("exercises").update(row).eq("id", e.id)); else await q(sb.from("exercises").insert(row));
     go("esercizi");
   });
