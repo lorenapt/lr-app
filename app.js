@@ -235,7 +235,7 @@ async function logout() { await unregisterPush(); S.pushOk = false; await sb.aut
 
 /* ---------- shell ---------- */
 var ADMIN_TABS = [["clienti", "Clienti", "♡"], ["agenda", "Agenda", "◷"], ["esercizi", "Esercizi", "◇"], ["scadenze", "Scadenze", "€"], ["profilo", "Profilo", "○"]];
-var CLIENT_TABS = [["allenamento", "Oggi", "♡"], ["lezioni", "Lezioni", "◷"], ["progressi", "Progressi", "↗"], ["obiettivi", "Obiettivi", "◇"], ["profilo", "Profilo", "○"]];
+var CLIENT_TABS = [["allenamento", "Oggi", "♡"], ["lezioni", "Lezioni", "◷"], ["abbonamenti", "Abbonamenti", "€"], ["progressi", "Progressi", "↗"], ["profilo", "Profilo", "○"]];
 function go(tab, view) { S.tab = tab; S.view = view || null; render(); window.scrollTo(0, 0); }
 function openView(view) { S.view = view; render(); window.scrollTo(0, 0); }
 async function render() {
@@ -642,7 +642,7 @@ async function subsView(clientId, adminClient) {
   return h("div", { class: "card list" }, ss.map(function (s) {
     var expired = s.end_date && s.end_date < today();
     return h("div", { class: "item", onclick: adminClient ? function () { editSub(adminClient, s); } : null },
-      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, fmtDate(s.start_date) + " → " + fmtDate(s.end_date) + " · " + euro(s.price_eur) + (s.lessons_included ? " · " + s.lessons_included + " lezioni" : ""))),
+      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, fmtDate(s.start_date) + " → " + fmtDate(s.end_date) + " · " + euro(s.price_eur) + (s.lessons_included ? " · " + s.lessons_included + " lezioni" : "") + (s.bought_in_app ? " · acquistato dall'app" : ""))),
       h("span", { class: "pill " + (expired ? "off" : "ok") }, expired ? "scaduto" : "attivo"));
   }));
 }
@@ -657,9 +657,24 @@ async function paysView(clientId, adminClient) {
       h("span", { class: "pill " + st[1] }, late ? "in ritardo" : st[0]));
   }));
 }
+function addDur(start, iv) {
+  if (!iv || !start) return null;
+  var m = String(iv).match(/(\d+)\s*(year|mon|day)/); if (!m) return null;
+  var d = new Date(start + "T12:00:00Z");
+  if (m[2] === "day") d.setUTCDate(d.getUTCDate() + +m[1]); else d.setUTCMonth(d.getUTCMonth() + (m[2] === "year" ? 12 : 1) * +m[1]);
+  d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10);
+}
 function editSub(c, s) {
   s = s || {};
+  var plans = [], planId = s.plan_id || null;
+  var pick = s.id ? null : h("select", { id: "sb_pl", onchange: function () {
+    var p = plans.filter(function (x) { return x.id === pick.value; })[0]; planId = p ? p.id : null; if (!p) return;
+    $("#sb_n").value = p.name; $("#sb_p").value = String(p.price_eur).replace(".", ","); $("#sb_l").value = p.lessons === null ? "" : p.lessons;
+    $("#sb_e").value = addDur(val("sb_s") || today(), p.duration) || "";
+  } }, h("option", { value: "" }, "— scegli dal listino —"));
+  if (pick) q(sb.from("plans").select("*").order("position")).then(function (ps) { plans = ps; ps.forEach(function (p) { pick.appendChild(h("option", { value: p.id }, p.name + " · " + euro(p.price_eur))); }); }).catch(fail);
   modal(s.id ? "Modifica abbonamento" : "Nuovo abbonamento", [
+    pick ? h("div", null, h("label", { for: "sb_pl" }, "Dal listino"), pick) : null,
     field("Pacchetto", "sb_n", "text", s.plan_name, { placeholder: "es. Mensile online, 10 lezioni" }),
     h("div", { class: "grid2" }, field("Prezzo (€)", "sb_p", "text", s.price_eur, { inputmode: "decimal" }),
       field("Lezioni incluse", "sb_l", "number", s.lessons_included, { inputmode: "numeric", placeholder: "vuoto = illimitate" })),
@@ -672,7 +687,7 @@ function editSub(c, s) {
       confirmDo("Eliminare questo abbonamento?", async function () { try { await q(sb.from("subscriptions").delete().eq("id", s.id)); document.querySelector(".modal").remove(); reloadClient(c, "pagamenti"); } catch (e) { fail(e); } });
     } }, "Elimina") : null
   ], async function () {
-    var row = { client_id: c.id, plan_name: val("sb_n"), price_eur: num("sb_p"), lessons_included: num("sb_l"), start_date: val("sb_s"), end_date: val("sb_e"), notes: val("sb_x") };
+    var row = { client_id: c.id, plan_id: planId, plan_name: val("sb_n"), price_eur: num("sb_p"), lessons_included: num("sb_l"), start_date: val("sb_s"), end_date: val("sb_e"), notes: val("sb_x") };
     if (!row.plan_name || !row.start_date) { toast("Inserisci pacchetto e data di inizio"); return false; }
     if (s.id) await q(sb.from("subscriptions").update(row).eq("id", s.id));
     else {
@@ -1183,14 +1198,14 @@ function addPhotos(reload) {
 /* --- progressi --- */
 VIEWS.progressi = async function () {
   var sub = S.progSub || "diario";
-  var subs = [["diario", "Diario"], ["carichi", "Carichi"], ["misure", "Misure"], ["foto", "Foto"], ["checkin", "Check-in"], ["abbonamento", "Abbonamento"]];
+  var subs = [["diario", "Diario"], ["carichi", "Carichi"], ["misure", "Misure"], ["foto", "Foto"], ["checkin", "Check-in"], ["obiettivi", "Obiettivi"]];
   var content;
   if (sub === "diario") content = await workoutHistory(S.me.id);
   else if (sub === "carichi") content = await loadsView(S.me.id);
   else if (sub === "misure") content = await measuresView(S.me.id, null);
   else if (sub === "foto") content = await photosView(S.me.id, false, function () { render(); });
   else if (sub === "checkin") content = [h("button", { class: "btn ghost block", style: "margin:0 0 14px", onclick: function () { openView({ name: "checkin" }); } }, "Compila il check-in di questa settimana"), await checkinsView(S.me.id)];
-  else content = [await subsView(S.me.id, null), h("h2", { style: "margin-top:16px" }, "Pagamenti"), await paysView(S.me.id, null)];
+  else content = await goalsView(S.me.id, null);
   return [h("h1", null, "Progressi"),
     h("div", { class: "subnav" }, subs.map(function (s) { return h("button", { class: sub === s[0] ? "on" : "", onclick: function () { S.progSub = s[0]; render(); } }, s[1]); })),
     content];
@@ -1261,6 +1276,8 @@ VIEWS.notifiche = async function () {
   ];
 };
 async function openNotif(n) {
+  if (S.me.role === "admin" && n.kind === "acquisto") return go("scadenze");
+  if (S.me.role !== "admin" && n.kind === "rinnovo") return go("abbonamenti");
   if (S.me.role === "admin") { S.agSub = "agenda"; if (n.booking_at) S.agWeek = weekStartOf(romeDay(n.booking_at)); return go("agenda"); }
   if (n.kind === "posto_libero" && n.booking_at && new Date(n.booking_at) > new Date()) {
     var qe = await sb.from("booking_queue").select("mode").eq("client_id", S.me.id).eq("starts_at", n.booking_at).maybeSingle();
@@ -1335,6 +1352,13 @@ VIEWS.lezioni = async function () {
         h("button", { class: "btn block", onclick: function () { prenotaDa(x.starts_at, x.mode); } }, "Prenota ora"));
     }),
     h("button", { class: "btn block", style: "margin:0 0 14px", disabled: full ? true : null, onclick: function () { S.bk = null; openView({ name: "prenota" }); } }, "Prenota una lezione"),
+    (function () {
+      var tday = romeDay(new Date()), left = 0, unl = false;
+      (ctx.subscriptions || []).forEach(function (x) { if (x.start_date <= tday && (!x.end_date || x.end_date >= tday)) { if (x.lessons_included === null) unl = true; else left += Math.max(0, x.lessons_included - x.used); } });
+      return h("div", { class: "card row small", style: "margin-bottom:14px" },
+        h("div", null, unl ? "Lezioni illimitate nel tuo abbonamento" : left ? "Lezioni disponibili nei tuoi pacchetti: " + left : "Nessun pacchetto di lezioni attivo: le lezioni si pagano singolarmente."),
+        h("button", { class: "link small", onclick: function () { go("abbonamenti"); } }, left || unl ? "Dettagli" : "Vedi pacchetti"));
+    })(),
     full ? h("p", { class: "small muted", style: "margin-top:-6px" }, "Hai già " + ctx.active_count + " lezioni prenotate, il massimo consentito. Potrai prenotarne un'altra dopo la prossima lezione.") : null,
     pushCard(),
     h("h2", null, "Prossime lezioni"),
@@ -1666,23 +1690,178 @@ function exceptionModal() {
 }
 AG.impostazioni = async function () {
   var st = await q(sb.from("booking_settings").select("*").eq("id", 1).single());
-  return h("div", { class: "card" },
+  return [await plansAdmin(), h("div", { class: "card" },
     h("h3", null, "Prenotazioni"),
     h("div", { class: "grid2" }, field("Prezzo lezione in presenza (€)", "bs_pp", "text", st.price_presenza_eur, { inputmode: "decimal" }), field("Prezzo lezione online (€)", "bs_po", "text", st.price_online_eur, { inputmode: "decimal" })),
     h("p", { class: "small muted" }, "Il prezzo vale per chi non ha un abbonamento: alla prenotazione viene creato il pagamento da incassare (lo trovi in Scadenze)."),
     field("Lezioni prenotabili alla volta per cliente", "bs_max", "number", st.max_active_bookings, { inputmode: "numeric" }),
     field("Indirizzo della palestra (lo vede la cliente)", "bs_addr", "text", st.gym_address),
     field("Numero WhatsApp di Lorena (per il tasto “Scrivi a Lorena”)", "bs_wa", "tel", st.whatsapp_number, { placeholder: "es. 333 1234567" }),
+    h("div", { class: "grid2" }, field("Intestatario conto (bonifici)", "bs_ih", "text", st.iban_holder), field("IBAN", "bs_ib", "text", st.iban)),
+    field("Nota sotto il listino (la vede la cliente)", "bs_pn", "text", st.plans_note, { placeholder: "es. Tutti i piani comprendono consigli alimentari." }),
     field("Informativa privacy (la cliente la accetta al primo accesso)", "bs_pv", "textarea", st.privacy_text, { style: "min-height:240px" }),
     h("p", { class: "small muted" }, "Il testo attuale è una bozza: fallo verificare a un consulente privacy e completalo con i dati del titolare."),
     h("button", { class: "btn block", onclick: async function () {
       try {
-        await q(sb.from("booking_settings").update({ price_presenza_eur: num("bs_pp"), price_online_eur: num("bs_po"), max_active_bookings: num("bs_max") || 3, gym_address: val("bs_addr"), whatsapp_number: val("bs_wa"), privacy_text: val("bs_pv"), updated_at: new Date().toISOString() }).eq("id", 1));
+        await q(sb.from("booking_settings").update({ price_presenza_eur: num("bs_pp"), price_online_eur: num("bs_po"), max_active_bookings: num("bs_max") || 3, gym_address: val("bs_addr"), whatsapp_number: val("bs_wa"), iban: val("bs_ib") ? val("bs_ib").replace(/\s/g, "").toUpperCase() : null, iban_holder: val("bs_ih"), plans_note: val("bs_pn"), privacy_text: val("bs_pv"), updated_at: new Date().toISOString() }).eq("id", 1));
         toast("Impostazioni salvate");
       } catch (e) { fail(e); }
-    } }, "Salva"));
+    } }, "Salva"))];
 };
 
+/* =================== ABBONAMENTI E ACQUISTI =================== */
+function durLabel(iv) {
+  if (!iv) return "senza scadenza";
+  var m = String(iv).match(/(\d+)\s*(year|mon|day)/); if (!m) return String(iv);
+  var n = +m[1];
+  if (m[2] === "year") return n === 1 ? "1 anno" : n + " anni";
+  if (m[2] === "mon") return n === 1 ? "1 mese" : n + " mesi";
+  if (n % 7 === 0) return (n / 7) + " settimane";
+  return n + " giorni";
+}
+function lessonsLabel(n) { return n === null || n === undefined ? "lezioni illimitate" : n === 0 ? null : n === 1 ? "1 lezione" : n + " lezioni"; }
+function copyBtn(text, label) {
+  return h("button", { class: "btn ghost sm", onclick: function () {
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { toast(label + " copiato"); }).catch(function () { toast(text); });
+  } }, "Copia");
+}
+function ibanBox(st, amount, causale) {
+  return h("div", { class: "card freed small" },
+    h("div", { class: "eyebrow" }, "Dati per il bonifico"),
+    h("div", { class: "kv" }, h("span", null, "Intestatario"), h("b", null, st.iban_holder || "—")),
+    h("div", { class: "kv" }, h("span", null, "IBAN"), h("b", { style: "word-break:break-all" }, st.iban || "—"), st.iban ? copyBtn(st.iban.replace(/\s/g, ""), "IBAN") : null),
+    amount !== null ? h("div", { class: "kv" }, h("span", null, "Importo"), h("b", null, euro(amount))) : null,
+    causale ? h("div", { class: "kv" }, h("span", null, "Causale"), h("b", null, causale), copyBtn(causale, "Causale")) : null,
+    h("p", { class: "muted", style: "margin:8px 0 0" }, "Fai il bonifico entro 3 giorni. Il pacchetto è già attivo: puoi prenotare subito."));
+}
+VIEWS.abbonamenti = async function () {
+  var r = await Promise.all([
+    q(sb.from("plans").select("*").eq("active", true).order("position")),
+    q(sb.from("subscriptions").select("*").eq("client_id", S.me.id).order("start_date", { ascending: false })),
+    q(sb.from("payments").select("*").eq("client_id", S.me.id).eq("status", "da_pagare").order("due_date")),
+    q(sb.from("booking_settings").select("iban, iban_holder, plans_note, price_presenza_eur, price_online_eur").eq("id", 1).single()),
+    q(sb.from("bookings").select("subscription_id").eq("client_id", S.me.id).eq("status", "confermata").not("subscription_id", "is", null))
+  ]);
+  var plans = r[0], subs = r[1], pend = r[2], st = r[3], used = {};
+  r[4].forEach(function (b) { used[b.subscription_id] = (used[b.subscription_id] || 0) + 1; });
+  var tday = today();
+  var active = subs.filter(function (s) { return !s.end_date || s.end_date >= tday; });
+  var single = st.price_presenza_eur;
+  return [
+    h("h1", null, "Abbonamenti"),
+    active.length ? [h("h2", null, "I tuoi pacchetti"), active.map(function (s) {
+      var tot = s.lessons_included, u = used[s.id] || 0, left = tot === null ? null : Math.max(0, tot - u);
+      var future = s.start_date > tday;
+      var pay = pend.filter(function (p) { return p.subscription_id === s.id; })[0];
+      return h("div", { class: "card" },
+        h("div", { class: "row" }, h("h3", { style: "margin:0" }, s.plan_name), h("span", { class: "pill " + (future ? "off" : "ok") }, future ? "dal " + fmtDate(s.start_date) : "attivo")),
+        tot ? h("div", { style: "margin-top:10px" }, h("div", { class: "row small" }, h("span", null, "Lezioni rimaste"), h("b", null, left + " di " + tot)),
+          h("div", { class: "bar" }, h("i", { style: "width:" + Math.round((left / tot) * 100) + "%" }))) : (tot === null ? h("div", { class: "small", style: "margin-top:8px" }, "Lezioni illimitate") : null),
+        h("div", { class: "small muted", style: "margin-top:8px" }, s.end_date ? "Valido fino al " + fmtDate(s.end_date) : "Senza scadenza"),
+        pay ? h("div", { class: "tip" }, "Da pagare: " + euro(pay.amount_eur) + " · " + (pay.method === "Bonifico" ? "bonifico entro il " + fmtDate(pay.due_date) : "contanti alla prossima lezione"),
+          pay.method === "Bonifico" ? h("button", { class: "link small", style: "display:block;margin-top:6px", onclick: function () {
+            modal("Dati per il bonifico", ibanBox(st, pay.amount_eur, (S.me.full_name || S.me.username) + " - " + s.plan_name));
+          } }, "Vedi i dati per il bonifico") : null) : null,
+        tot && left > 0 && !future ? h("button", { class: "btn ghost block", onclick: function () { S.bk = null; S.tab = "lezioni"; openView({ name: "prenota" }); } }, "Prenota una lezione") : null);
+    })] : null,
+    h("h2", null, active.length ? "Acquista un altro pacchetto" : "Scegli il tuo pacchetto"),
+    plans.map(function (p) {
+      var ll = lessonsLabel(p.lessons);
+      return h("div", { class: "card plan" },
+        h("div", { class: "row", style: "align-items:flex-start" }, h("h3", { style: "margin:0" }, p.name), h("div", { class: "price" }, euro(p.price_eur), p.recurring ? h("small", null, "/mese") : null)),
+        p.description ? h("p", { class: "small", style: "margin:8px 0" }, p.description) : null,
+        h("div", { class: "chips" }, ll ? h("span", { class: "pill" }, ll) : null, h("span", { class: "pill off" }, p.recurring ? "rinnovo mensile" : "valido " + durLabel(p.duration))),
+        h("button", { class: "btn block", onclick: function () { openView({ name: "acquista", plan: p.id }); } }, "Acquista"));
+    }),
+    single !== null && single !== undefined ? h("div", { class: "card row" }, h("div", null, h("h3", { style: "margin:0" }, "Lezione singola"), h("div", { class: "small muted" }, euro(single) + " · si prenota dal calendario e si paga dopo la lezione")),
+      h("button", { class: "btn ghost sm", onclick: function () { S.bk = null; S.tab = "lezioni"; openView({ name: "prenota" }); } }, "Prenota")) : null,
+    st.plans_note ? h("p", { class: "small muted", style: "text-align:center" }, st.plans_note) : null,
+    h("h2", { style: "margin-top:18px" }, "Storico abbonamenti e pagamenti"),
+    await subsView(S.me.id, null),
+    h("div", { style: "height:10px" }),
+    await paysView(S.me.id, null)
+  ];
+};
+VIEWS.acquista = async function (v) {
+  var r = await Promise.all([
+    q(sb.from("plans").select("*").eq("id", v.plan).single()),
+    q(sb.from("booking_settings").select("iban, iban_holder, plans_note").eq("id", 1).single())
+  ]);
+  var p = r[0], st = r[1], method = v.method || null;
+  var box = h("div");
+  var causale = (S.me.full_name || S.me.username) + " - " + p.name;
+  var draw = function () {
+    box.innerHTML = "";
+    add(box, [
+      h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Il tuo pacchetto"),
+        h("div", { class: "row", style: "align-items:flex-start" }, h("h2", { style: "margin:0" }, p.name), h("div", { class: "price" }, euro(p.price_eur), p.recurring ? h("small", null, "/mese") : null)),
+        p.description ? h("p", { class: "small" }, p.description) : null,
+        h("div", { class: "small muted" }, [lessonsLabel(p.lessons), p.recurring ? "1 mese, rinnovabile" : "valido " + durLabel(p.duration) + " dall'acquisto"].filter(Boolean).join(" · "))),
+      h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Come vuoi pagare?"),
+        h("div", { class: "opts" }, [["bonifico", "Bonifico", "entro 3 giorni"], ["contanti", "Contanti", "in presenza, alla prossima lezione"]].map(function (o) {
+          return h("button", { class: "opt" + (method === o[0] ? " on" : ""), onclick: function () { method = o[0]; draw(); } }, h("strong", null, o[1]), h("span", null, o[2]));
+        }))),
+      method === "bonifico" ? ibanBox(st, p.price_eur, causale) : null,
+      method === "contanti" ? h("div", { class: "tip", style: "margin-bottom:14px" }, "Paghi in contanti direttamente a Lorena alla prossima lezione. Il pacchetto è attivo da subito.") : null,
+      h("button", { class: "btn block", disabled: method ? null : true, onclick: async function (e) {
+        e.target.disabled = true;
+        try {
+          await q(sb.rpc("purchase_plan", { p_plan: p.id, p_method: method }));
+          go("abbonamenti");
+          modal("Acquisto confermato!", [
+            h("p", { style: "margin-top:0" }, "«" + p.name + "» è attivo. Lorena è stata avvisata."),
+            method === "bonifico" ? ibanBox(st, p.price_eur, causale) : h("p", { class: "muted" }, "Ricordati di portare " + euro(p.price_eur) + " in contanti alla prossima lezione."),
+            p.lessons ? h("p", { class: "small muted" }, "Le lezioni incluse si scalano da sole quando prenoti dal calendario.") : null
+          ]);
+        } catch (er) { fail(er); e.target.disabled = false; }
+      } }, "Conferma acquisto · " + euro(p.price_eur)),
+      h("p", { class: "small muted", style: "text-align:center" }, "Confermando, il pacchetto si attiva subito e il pagamento resta da saldare finché Lorena non lo registra.")
+    ]);
+  };
+  draw();
+  return [h("button", { class: "back", onclick: function () { go("abbonamenti"); } }, "‹ Abbonamenti"), h("h1", null, "Acquista"), box];
+};
+
+/* --- listino (admin, in Impostazioni) --- */
+var DUR_OPTS = [["", "Nessuna scadenza"], ["28 days", "4 settimane"], ["42 days", "6 settimane"], ["56 days", "8 settimane"], ["1 month", "1 mese"], ["2 months", "2 mesi"], ["3 months", "3 mesi"], ["6 months", "6 mesi"], ["12 months", "12 mesi"]];
+function durValue(iv) {
+  if (!iv) return "";
+  var m = String(iv).match(/(\d+)\s*(year|mon|day)/); if (!m) return "";
+  if (m[2] === "year") return (+m[1] * 12) + " months";
+  return m[2] === "mon" ? (m[1] === "1" ? "1 month" : m[1] + " months") : m[1] + " days";
+}
+async function plansAdmin() {
+  var ps = await q(sb.from("plans").select("*").order("position"));
+  return h("div", { class: "card" },
+    h("div", { class: "row" }, h("h3", { style: "margin:0" }, "Listino pacchetti"), h("button", { class: "btn sm", onclick: function () { editPlan(); } }, "+ Pacchetto")),
+    h("p", { class: "small muted" }, "Sono i pacchetti che le clienti vedono e acquistano in Abbonamenti. Tocca un pacchetto per modificarlo."),
+    h("div", { class: "list" }, ps.map(function (p) {
+      return h("div", { class: "item", onclick: function () { editPlan(p); } },
+        h("div", null, h("div", null, p.name), h("div", { class: "small muted" }, [euro(p.price_eur) + (p.recurring ? "/mese" : ""), lessonsLabel(p.lessons), p.recurring ? "rinnovo mensile" : durLabel(p.duration)].filter(Boolean).join(" · "))),
+        p.active ? h("span", { class: "muted" }, "›") : h("span", { class: "pill off" }, "nascosto"));
+    })));
+}
+function editPlan(p) {
+  p = p || { active: true, recurring: false, lessons: 0 };
+  modal(p.id ? "Modifica pacchetto" : "Nuovo pacchetto", [
+    field("Nome", "pl_n", "text", p.name, { placeholder: "es. 10 lezioni one to one" }),
+    field("Descrizione (la vede la cliente)", "pl_d", "textarea", p.description),
+    h("div", { class: "grid2" }, field("Prezzo (€)", "pl_p", "text", p.price_eur, { inputmode: "decimal" }),
+      field("Lezioni incluse", "pl_l", "number", p.lessons, { inputmode: "numeric", placeholder: "vuoto = illimitate" })),
+    h("p", { class: "small muted", style: "margin-top:0" }, "Lezioni incluse: 0 se il pacchetto non comprende lezioni prenotabili (es. solo scheda)."),
+    select("Durata dall'acquisto", "pl_t", DUR_OPTS, durValue(p.duration)),
+    h("label", { style: "display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:.9rem;margin-top:12px" }, h("input", { type: "checkbox", id: "pl_r", checked: p.recurring ? true : null, style: "width:auto" }), "Rinnovo mensile (avviso alla cliente 3 giorni prima della scadenza)"),
+    h("label", { style: "display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:.9rem;margin-top:8px" }, h("input", { type: "checkbox", id: "pl_a", checked: p.active ? true : null, style: "width:auto" }), "Visibile alle clienti"),
+    field("Ordine nel listino", "pl_o", "number", p.position || 0, { inputmode: "numeric" }),
+    p.id ? h("p", { class: "small muted" }, "Le modifiche valgono per i nuovi acquisti; gli abbonamenti già venduti restano come sono.") : null
+  ], async function () {
+    var row = { name: val("pl_n"), description: val("pl_d"), price_eur: num("pl_p"), lessons: num("pl_l"), duration: $("#pl_t").value || null,
+      recurring: $("#pl_r").checked, active: $("#pl_a").checked, position: num("pl_o") || 0 };
+    if (!row.name || row.price_eur === null) { toast("Inserisci nome e prezzo"); return false; }
+    if (p.id) await q(sb.from("plans").update(row).eq("id", p.id)); else await q(sb.from("plans").insert(row));
+    toast("Listino aggiornato"); render();
+  });
+}
 /* --- profilo (tutti) --- */
 VIEWS.profilo = async function () {
   return [

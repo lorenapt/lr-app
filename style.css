@@ -173,3 +173,11 @@ details.ex-item summary::-webkit-details-marker{display:none}
 .ph img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:12px;display:block;background:var(--blush)}
 .ph.empty span{display:grid;place-items:center;aspect-ratio:3/4;border-radius:12px;background:#F4EFEC;color:#CFC3BE}
 .ph figcaption{font-size:.72rem;color:var(--muted);text-align:center;margin-top:4px}
+
+/* v6 — pacchetti */
+.plan .price{font-family:var(--serif);font-size:1.6rem;color:var(--rose-d);white-space:nowrap;margin-left:10px}
+.price small{font-family:var(--sans);font-size:.75rem;color:var(--muted)}
+.plan .chips{margin:6px 0 4px}
+.kv{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
+.kv span{color:var(--muted);min-width:84px;font-size:.8rem}
+.kv b{flex:1;font-weight:500}
