@@ -71,13 +71,13 @@ function modal(title, body, onSave, saveLabel) {
   var first = m.querySelector("input,textarea,select"); if (first && window.innerWidth > 700) first.focus();
   return m;
 }
-function confirmDo(msg, fn) {
+function confirmDo(msg, fn, label) {
   var m = h("div", { class: "modal", style: "z-index:60;align-items:center" },
     h("div", { class: "sheet", style: "max-width:420px;border-radius:22px" },
       h("p", { style: "margin-top:0" }, msg),
       h("div", { class: "row", style: "justify-content:flex-end;margin-top:14px" },
         h("button", { class: "btn ghost sm", onclick: function () { m.remove(); } }, "Annulla"),
-        h("button", { class: "btn sm", style: "background:#A0524F", onclick: function () { m.remove(); fn(); } }, "Elimina"))));
+        h("button", { class: "btn sm", style: "background:#A0524F", onclick: function () { m.remove(); fn(); } }, label || "Elimina"))));
   document.body.appendChild(m);
 }
 var MAX_VIDEO = 50 * 1024 * 1024;
@@ -136,7 +136,10 @@ async function afterLogin(user) {
   catch (e) { fail(e); await sb.auth.signOut(); return renderLogin(); }
   if (!S.me.active && S.me.role !== "admin") { await sb.auth.signOut(); return renderLogin("Account non attivo. Contatta la tua personal trainer."); }
   S.tab = S.me.role === "admin" ? "clienti" : "allenamento";
-  S.view = null; render();
+  S.view = null;
+  if (/[?&]v=notifiche/.test(location.search)) { S.view = { name: "notifiche" }; try { history.replaceState(null, "", location.pathname); } catch (e) { /* niente */ } }
+  render();
+  syncPush(false).catch(function () {});
 }
 function renderLogin(msg) {
   root.innerHTML = "";
@@ -162,11 +165,11 @@ function renderLogin(msg) {
     h("p", { class: "small muted", style: "text-align:center;margin-top:28px" }, "Hai dimenticato la password? Scrivi a Lorena su WhatsApp."));
   root.appendChild(form);
 }
-async function logout() { await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
+async function logout() { await unregisterPush(); S.pushOk = false; await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
 
 /* ---------- shell ---------- */
-var ADMIN_TABS = [["clienti", "Clienti", "♡"], ["esercizi", "Esercizi", "◇"], ["scadenze", "Scadenze", "◷"], ["profilo", "Profilo", "○"]];
-var CLIENT_TABS = [["allenamento", "Allenati", "♡"], ["progressi", "Progressi", "↗"], ["obiettivi", "Obiettivi", "◇"], ["profilo", "Profilo", "○"]];
+var ADMIN_TABS = [["clienti", "Clienti", "♡"], ["agenda", "Agenda", "◷"], ["esercizi", "Esercizi", "◇"], ["scadenze", "Scadenze", "€"], ["profilo", "Profilo", "○"]];
+var CLIENT_TABS = [["allenamento", "Allenati", "♡"], ["lezioni", "Lezioni", "◷"], ["progressi", "Progressi", "↗"], ["obiettivi", "Obiettivi", "◇"], ["profilo", "Profilo", "○"]];
 function go(tab, view) { S.tab = tab; S.view = view || null; render(); window.scrollTo(0, 0); }
 function openView(view) { S.view = view; render(); window.scrollTo(0, 0); }
 async function render() {
@@ -179,7 +182,8 @@ async function render() {
   })));
   main.appendChild(h("div", { class: "top" },
     h("div", { class: "brand" }, "LR", h("small", null, "Personal Training")),
-    h("span", { class: "small muted" }, S.me.full_name || S.me.username)));
+    h("div", { class: "topr" }, h("span", { class: "small muted" }, S.me.full_name || S.me.username), bellBtn())));
+  updateBell();
   var body = h("div"); main.appendChild(body);
   body.appendChild(h("div", { class: "empty" }, "Caricamento…"));
   try {
@@ -509,7 +513,7 @@ async function subsView(clientId, adminClient) {
   return h("div", { class: "card list" }, ss.map(function (s) {
     var expired = s.end_date && s.end_date < today();
     return h("div", { class: "item", onclick: adminClient ? function () { editSub(adminClient, s); } : null },
-      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, fmtDate(s.start_date) + " → " + fmtDate(s.end_date) + " · " + euro(s.price_eur))),
+      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, fmtDate(s.start_date) + " → " + fmtDate(s.end_date) + " · " + euro(s.price_eur) + (s.lessons_included ? " · " + s.lessons_included + " lezioni" : ""))),
       h("span", { class: "pill " + (expired ? "off" : "ok") }, expired ? "scaduto" : "attivo"));
   }));
 }
@@ -528,7 +532,9 @@ function editSub(c, s) {
   s = s || {};
   modal(s.id ? "Modifica abbonamento" : "Nuovo abbonamento", [
     field("Pacchetto", "sb_n", "text", s.plan_name, { placeholder: "es. Mensile online, 10 lezioni" }),
-    field("Prezzo (€)", "sb_p", "text", s.price_eur, { inputmode: "decimal" }),
+    h("div", { class: "grid2" }, field("Prezzo (€)", "sb_p", "text", s.price_eur, { inputmode: "decimal" }),
+      field("Lezioni incluse", "sb_l", "number", s.lessons_included, { inputmode: "numeric", placeholder: "vuoto = illimitate" })),
+    h("div", { class: "small muted" }, "Le lezioni prenotate nel periodo dell'abbonamento vengono scalate da qui. Lascia vuoto per lezioni illimitate."),
     h("div", { class: "grid2" }, field("Inizio", "sb_s", "date", s.start_date || today()), field("Fine", "sb_e", "date", s.end_date)),
     field("Note", "sb_x", "textarea", s.notes),
     s.id ? null : h("label", { style: "display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:.9rem" },
@@ -537,7 +543,7 @@ function editSub(c, s) {
       confirmDo("Eliminare questo abbonamento?", async function () { try { await q(sb.from("subscriptions").delete().eq("id", s.id)); document.querySelector(".modal").remove(); reloadClient(c, "pagamenti"); } catch (e) { fail(e); } });
     } }, "Elimina") : null
   ], async function () {
-    var row = { client_id: c.id, plan_name: val("sb_n"), price_eur: num("sb_p"), start_date: val("sb_s"), end_date: val("sb_e"), notes: val("sb_x") };
+    var row = { client_id: c.id, plan_name: val("sb_n"), price_eur: num("sb_p"), lessons_included: num("sb_l"), start_date: val("sb_s"), end_date: val("sb_e"), notes: val("sb_x") };
     if (!row.plan_name || !row.start_date) { toast("Inserisci pacchetto e data di inizio"); return false; }
     if (s.id) await q(sb.from("subscriptions").update(row).eq("id", s.id));
     else {
@@ -553,7 +559,7 @@ function editPay(c, p) {
     field("Importo (€)", "py_a", "text", p.amount_eur, { inputmode: "decimal" }),
     h("div", { class: "grid2" }, field("Scadenza", "py_d", "date", p.due_date || today()), field("Pagato il", "py_p", "date", p.paid_on)),
     select("Stato", "py_s", [["da_pagare", "Da pagare"], ["pagato", "Pagato"], ["annullato", "Annullato"]], p.status || "da_pagare"),
-    select("Metodo", "py_m", [["", "—"], ["Contanti", "Contanti"], ["Bonifico", "Bonifico"], ["POS", "POS / carta"], ["Satispay", "Satispay"], ["PayPal", "PayPal"]], p.method || ""),
+    select("Metodo", "py_m", [["", "—"], ["Contanti", "Contanti"], ["Carta", "Carta"], ["Bonifico", "Bonifico"], ["POS", "POS / carta"], ["Satispay", "Satispay"], ["PayPal", "PayPal"]], p.method || ""),
     field("Note", "py_n", "textarea", p.notes),
     p.id ? h("button", { class: "btn danger sm", style: "margin-top:16px", onclick: function () {
       confirmDo("Eliminare questo pagamento?", async function () { try { await q(sb.from("payments").delete().eq("id", p.id)); document.querySelector(".modal").remove(); reloadClient(c, "pagamenti"); } catch (e) { fail(e); } });
@@ -772,6 +778,489 @@ VIEWS.progressi = async function () {
 };
 VIEWS.obiettivi = async function () { return [h("h1", null, "Obiettivi"), await goalsView(S.me.id, null)]; };
 
+
+/* =================== PRENOTAZIONI LEZIONI =================== */
+var VAPID_PUBLIC = "BEFPpyDprJp7yhUPEjmkGPbQM2FgyWpPfeGDm47gzmthF3ZMI2Rt9vhTP72jAEP2bhOzOMbsLdij0FqVAlYQevY";
+var TZ = "Europe/Rome";
+var WD = ["Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"];
+var WDL = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
+var MODE = { presenza: "In presenza", online: "Online" };
+var PAYM = { abbonamento: "Inclusa nell'abbonamento", contanti: "Contanti dopo la lezione", carta: "Carta dopo la lezione" };
+var CARD_MSG = "Hai scelto di pagare con carta: a breve ti contatteremo per guidarti passo passo nel pagamento.";
+var dayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+function romeDay(ts) { return dayFmt.format(new Date(ts)); }
+function romeHM(ts) { return new Date(ts).toLocaleTimeString("it-IT", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }); }
+function romeHour(ts) { return Number(romeHM(ts).slice(0, 2)); }
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function longDay(ts) { return cap(new Date(ts).toLocaleDateString("it-IT", { timeZone: TZ, weekday: "long", day: "numeric", month: "long" })); }
+function dayLabel(day) { return cap(new Date(day + "T12:00:00Z").toLocaleDateString("it-IT", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" })); }
+function slotLabel(ts) { return longDay(ts) + " alle " + romeHM(ts); }
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+function romeTs(day, hour) { return day + " " + pad2(hour) + ":00:00 " + TZ; }
+function addDays(day, n) { var d = new Date(day + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function isoWeekday(day) { var w = new Date(day + "T12:00:00Z").getUTCDay(); return w === 0 ? 7 : w; }
+function weekStartOf(day) { return addDays(day, 1 - isoWeekday(day)); }
+function hm(t) { return t ? String(t).slice(0, 5) : ""; }
+function hourOpts(a, b) { var o = []; for (var i = a; i <= b; i++) o.push([pad2(i) + ":00", pad2(i) + ":00"]); return o; }
+function whenAgo(ts) { return new Date(ts).toLocaleString("it-IT", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(",", " ·"); }
+function waNum(p) { var d = String(p || "").replace(/\D/g, ""); if (d.indexOf("00") === 0) d = d.slice(2); if (d.length === 10) d = "39" + d; return d; }
+function coverSub(ctx, day) {
+  return (ctx.subscriptions || []).filter(function (s) {
+    return s.start_date <= day && (!s.end_date || s.end_date >= day) && (s.lessons_included === null || s.used < s.lessons_included);
+  }).sort(function (a, b) { return (a.end_date || "9999") < (b.end_date || "9999") ? -1 : 1; })[0] || null;
+}
+
+/* --- notifiche in app + push --- */
+async function updateBell() {
+  if (!S.me) return;
+  var r = await sb.from("notifications").select("id", { count: "exact", head: true }).eq("user_id", S.me.id).is("read_at", null);
+  var b = document.getElementById("bellc"); if (!b) return;
+  var n = r.count || 0; b.textContent = n > 9 ? "9+" : String(n); b.style.display = n ? "" : "none";
+}
+function bellBtn() {
+  return h("button", { class: "bell", "aria-label": "Notifiche", onclick: function () { openView({ name: "notifiche" }); },
+    html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="n" id="bellc" style="display:none"></span>' });
+}
+VIEWS.notifiche = async function () {
+  var ns = await q(sb.from("notifications").select("*").eq("user_id", S.me.id).order("created_at", { ascending: false }).limit(50));
+  var unread = ns.filter(function (n) { return !n.read_at; }).map(function (n) { return n.id; });
+  if (unread.length) sb.from("notifications").update({ read_at: new Date().toISOString() }).in("id", unread).then(updateBell);
+  return [
+    h("div", { class: "row" }, h("h1", null, "Notifiche"),
+      ns.length ? h("button", { class: "link small", onclick: function () {
+        confirmDo("Cancellare tutte le notifiche?", async function () {
+          try { await q(sb.from("notifications").delete().eq("user_id", S.me.id)); render(); } catch (e) { fail(e); }
+        }, "Cancella");
+      } }, "Cancella tutte") : null),
+    pushCard(),
+    ns.length ? h("div", { class: "card list" }, ns.map(function (n) {
+      return h("div", { class: "item" + (n.read_at ? "" : " unread"), onclick: function () { openNotif(n); } },
+        h("div", null, h("div", { class: "nt" }, n.title), n.body ? h("div", { class: "small" }, n.body) : null,
+          h("div", { class: "small muted", style: "margin-top:2px" }, whenAgo(n.created_at))),
+        n.read_at ? h("span", { class: "muted" }, "›") : h("span", { class: "dot" }));
+    })) : h("div", { class: "card empty" }, "Nessuna notifica.")
+  ];
+};
+async function openNotif(n) {
+  if (S.me.role === "admin") { S.agSub = "agenda"; if (n.booking_at) S.agWeek = weekStartOf(romeDay(n.booking_at)); return go("agenda"); }
+  if (n.kind === "posto_libero" && n.booking_at && new Date(n.booking_at) > new Date()) {
+    var qe = await sb.from("booking_queue").select("mode").eq("client_id", S.me.id).eq("starts_at", n.booking_at).maybeSingle();
+    return prenotaDa(n.booking_at, qe.data ? qe.data.mode : null);
+  }
+  go("lezioni");
+}
+function isIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent); }
+function isStandalone() { return window.navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone)").matches); }
+function pushState() {
+  var ok = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  if (!ok) return isIOS() && !isStandalone() ? "install" : "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  if (Notification.permission === "granted" && S.pushOk) return "on";
+  return "off";
+}
+function b64u(s) { var p = "=".repeat((4 - s.length % 4) % 4); var r = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); var a = new Uint8Array(r.length); for (var i = 0; i < r.length; i++) a[i] = r.charCodeAt(i); return a; }
+async function syncPush(ask) {
+  if (pushState() === "install" || pushState() === "unsupported") return false;
+  if (ask) { var perm = await Notification.requestPermission(); if (perm !== "granted") return false; }
+  else if (Notification.permission !== "granted") return false;
+  var reg = await navigator.serviceWorker.ready;
+  var sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(VAPID_PUBLIC) });
+  var j = sub.toJSON();
+  await q(sb.rpc("register_push", { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_ua: navigator.userAgent }));
+  S.pushOk = true; return true;
+}
+async function unregisterPush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    var reg = await navigator.serviceWorker.ready; var sub = await reg.pushManager.getSubscription();
+    if (sub) await sb.rpc("unregister_push", { p_endpoint: sub.endpoint });
+  } catch (e) { /* niente */ }
+}
+function pushCard(showOn) {
+  var st = pushState();
+  if (st === "unsupported" || (st === "on" && !showOn)) return null;
+  if (st === "on") return h("div", { class: "card small" }, h("h3", null, "Notifiche"), h("p", { style: "margin:0" }, "Attive su questo telefono ✓"),
+    S.me.role === "admin" ? h("button", { class: "btn ghost sm", style: "margin-top:10px", onclick: async function () {
+      try { await q(sb.from("notifications").insert({ user_id: S.me.id, kind: "info", title: "Notifica di prova", body: "Se leggi questo messaggio, le notifiche funzionano." })); toast("Inviata: arriva tra pochi secondi"); } catch (e) { fail(e); }
+    } }, "Invia una notifica di prova") : null);
+  var txt = { off: "Attiva le notifiche: ti avvisiamo quando si libera un posto, quando una lezione viene spostata e il giorno prima della lezione.",
+    install: "Per ricevere le notifiche aggiungi l'app alla schermata Home (istruzioni in Profilo) e aprila da lì.",
+    denied: "Le notifiche sono bloccate su questo telefono. Puoi riattivarle da Impostazioni → Notifiche → LR Training." }[st];
+  if (S.me.role === "admin" && st === "off") txt = "Attiva le notifiche per sapere subito quando una cliente prenota o disdice.";
+  return h("div", { class: "card freed small" }, h("p", { style: "margin:0" }, txt),
+    st === "off" ? h("button", { class: "btn sm", style: "margin-top:10px", onclick: async function (e) {
+      e.target.disabled = true;
+      try { if (await syncPush(true)) { toast("Notifiche attivate"); render(); } else { toast("Notifiche non autorizzate"); e.target.disabled = false; } }
+      catch (er) { fail(er); e.target.disabled = false; }
+    } }, "Attiva notifiche") : null);
+}
+
+/* --- cliente: le mie lezioni --- */
+VIEWS.lezioni = async function () {
+  var nowIso = new Date().toISOString();
+  var r = await Promise.all([
+    q(sb.from("bookings").select("*").eq("client_id", S.me.id).eq("status", "confermata").gte("starts_at", new Date(Date.now() - 3600e3).toISOString()).order("starts_at")),
+    q(sb.from("booking_queue").select("*").eq("client_id", S.me.id).gt("starts_at", nowIso).order("starts_at")),
+    q(sb.rpc("booking_context")),
+    q(sb.from("bookings").select("*").eq("client_id", S.me.id).eq("status", "confermata").lt("starts_at", new Date(Date.now() - 3600e3).toISOString()).order("starts_at", { ascending: false }).limit(5))
+  ]);
+  var bks = r[0], queue = r[1], ctx = r[2], past = r[3];
+  var full = ctx.active_count >= ctx.max_active;
+  var freed = queue.filter(function (x) { return x.notified_at; });
+  return [
+    h("h1", null, "Lezioni"),
+    freed.map(function (x) {
+      return h("div", { class: "card freed" }, h("div", { class: "eyebrow" }, "Si è liberato un posto"),
+        h("h3", null, slotLabel(x.starts_at)), h("div", { class: "small muted" }, MODE[x.mode]),
+        h("button", { class: "btn block", onclick: function () { prenotaDa(x.starts_at, x.mode); } }, "Prenota ora"));
+    }),
+    h("button", { class: "btn block", style: "margin:0 0 14px", disabled: full ? true : null, onclick: function () { S.bk = null; openView({ name: "prenota" }); } }, "Prenota una lezione"),
+    full ? h("p", { class: "small muted", style: "margin-top:-6px" }, "Hai già " + ctx.active_count + " lezioni prenotate, il massimo consentito. Potrai prenotarne un'altra dopo la prossima lezione.") : null,
+    pushCard(),
+    h("h2", null, "Prossime lezioni"),
+    bks.length ? bks.map(function (b) { return myBookingCard(b, ctx); }) : h("div", { class: "card empty" }, "Nessuna lezione in programma."),
+    queue.length ? [h("h2", null, "In coda"), h("div", { class: "card list" }, queue.map(function (x) {
+      return h("div", { class: "item", style: "cursor:default" },
+        h("div", null, h("div", null, slotLabel(x.starts_at)), h("div", { class: "small muted" }, MODE[x.mode] + (x.notified_at ? " · posto libero!" : " · ti avvisiamo se si libera"))),
+        h("button", { class: "link small", onclick: async function () {
+          try { await q(sb.rpc("leave_queue", { p_starts_at: x.starts_at })); toast("Sei uscita dalla coda"); render(); } catch (e) { fail(e); }
+        } }, "Esci"));
+    }))] : null,
+    past.length ? [h("h2", null, "Ultime lezioni"), h("div", { class: "card list" }, past.map(function (b) {
+      return h("div", { class: "item", style: "cursor:default" }, h("div", null, h("div", null, slotLabel(b.starts_at)), h("div", { class: "small muted" }, MODE[b.mode])), h("span", { class: "pill off" }, "svolta"));
+    }))] : null
+  ];
+};
+function myBookingCard(b, ctx) {
+  var started = new Date(b.starts_at) <= new Date();
+  return h("div", { class: "card" },
+    h("div", { class: "row" },
+      h("div", null, h("div", { class: "eyebrow" }, MODE[b.mode]), h("h3", { style: "margin:0" }, longDay(b.starts_at)),
+        h("div", { class: "small muted" }, "dalle " + romeHM(b.starts_at) + " alle " + pad2(romeHour(b.starts_at) + 1) + ":00")),
+      h("span", { class: "pill" + (b.payment_method === "abbonamento" ? " ok" : "") }, b.payment_method === "abbonamento" ? "abbonamento" : b.payment_method)),
+    b.mode === "online" ? (b.meet_link ? h("a", { class: "btn block", href: b.meet_link, target: "_blank", rel: "noopener" }, "Entra nella lezione su Meet")
+      : h("div", { class: "small muted", style: "margin-top:10px" }, "Il link della videochiamata comparirà qui prima della lezione."))
+      : (ctx.gym_address ? h("div", { class: "small muted", style: "margin-top:10px" }, "Dove: " + ctx.gym_address) : null),
+    b.payment_method === "carta" ? h("div", { class: "tip" }, CARD_MSG) : null,
+    b.payment_method === "contanti" ? h("div", { class: "small muted", style: "margin-top:6px" }, "Pagamento in contanti dopo la lezione.") : null,
+    started ? null : h("button", { class: "link small", style: "margin-top:12px", onclick: function () {
+      confirmDo("Vuoi disdire la lezione di " + slotLabel(b.starts_at) + "?" + (b.payment_method === "abbonamento" ? " La lezione torna disponibile nel tuo abbonamento." : ""), async function () {
+        try { await q(sb.rpc("cancel_booking", { p_id: b.id })); toast("Lezione disdetta"); render(); } catch (e) { fail(e); }
+      }, "Disdici");
+    } }, "Disdici lezione"));
+}
+function prenotaDa(ts, mode) {
+  var d = romeDay(ts);
+  S.bk = { mode: mode || null, day: d, ym: d.slice(0, 7), slot: ts, pay: null };
+  S.tab = "lezioni"; openView({ name: "prenota" });
+}
+
+/* --- cliente: prenota (tipo → giorno → ora → pagamento) --- */
+VIEWS.prenota = async function () {
+  var bk = S.bk || (S.bk = {});
+  var tday = romeDay(new Date());
+  if (!bk.ym) bk.ym = (bk.day || tday).slice(0, 7);
+  var ctx = await q(sb.rpc("booking_context"));
+  var box = h("div"), byDay = {}, loaded = null;
+  async function load() {
+    var y = +bk.ym.slice(0, 4), m = +bk.ym.slice(5, 7);
+    var first = bk.ym + "-01", last = addDays(new Date(Date.UTC(y, m, 1, 12)).toISOString().slice(0, 10), -1);
+    byDay = {};
+    if (last >= tday) {
+      var slots = await q(sb.rpc("get_slots", { p_from: first < tday ? tday : first, p_to: last }));
+      slots.forEach(function (s) { var k = romeDay(s.starts_at); (byDay[k] = byDay[k] || []).push(s); });
+    }
+    loaded = bk.ym;
+  }
+  async function draw() {
+    if (loaded !== bk.ym) { box.innerHTML = ""; box.appendChild(h("div", { class: "empty" }, "Caricamento…")); try { await load(); } catch (e) { fail(e); } }
+    box.innerHTML = ""; add(box, build());
+  }
+  function price(mode) { var p = mode === "online" ? ctx.price_online : ctx.price_presenza; return p === null || p === undefined ? null : euro(p); }
+  function build() {
+    var out = [];
+    out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, "1 · Tipo di lezione"),
+      h("div", { class: "opts" }, ["presenza", "online"].map(function (md) {
+        return h("button", { class: "opt" + (bk.mode === md ? " on" : ""), onclick: function () { bk.mode = md; draw(); } },
+          h("strong", null, MODE[md]), h("span", null, (md === "online" ? "Videochiamata Google Meet" : "In palestra") + " · 60 minuti"),
+          price(md) ? h("span", { class: "pr" }, price(md)) : null);
+      }))));
+    if (!bk.mode) return out;
+    // calendario
+    var y = +bk.ym.slice(0, 4), m = +bk.ym.slice(5, 7);
+    var first = bk.ym + "-01", nDays = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    var cal = h("div", { class: "cal" }, WD.map(function (w) { return h("div", { class: "wd" }, w); }));
+    for (var i = 1; i < isoWeekday(first); i++) cal.appendChild(h("div"));
+    for (var dd = 1; dd <= nDays; dd++) (function (dd) {
+      var key = bk.ym + "-" + pad2(dd), sl = byDay[key] || [];
+      var free = sl.some(function (s) { return s.state === "libero"; });
+      var cls = "d" + (key === tday ? " today" : "") + (bk.day === key ? " sel" : "") + (sl.length && !free ? " full" : "");
+      cal.appendChild(h("button", { class: cls, disabled: (key < tday || !sl.length) ? true : null, onclick: function () { bk.day = key; bk.slot = null; draw(); } }, String(dd)));
+    })(dd);
+    var prevYm = new Date(Date.UTC(y, m - 2, 1, 12)).toISOString().slice(0, 7), nextYm = new Date(Date.UTC(y, m, 1, 12)).toISOString().slice(0, 7);
+    out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, "2 · Giorno"),
+      h("div", { class: "calhead" },
+        h("button", { class: "calnav", disabled: prevYm < tday.slice(0, 7) ? true : null, onclick: function () { bk.ym = prevYm; draw(); } }, "‹"),
+        h("b", null, new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("it-IT", { month: "long", year: "numeric", timeZone: "UTC" })),
+        h("button", { class: "calnav", onclick: function () { bk.ym = nextYm; draw(); } }, "›")),
+      cal,
+      h("div", { class: "legend" }, h("span", null, h("i", { style: "background:#C0635E" }), "Completo"), h("span", null, h("i", { style: "border:1px solid var(--rose-l)" }), "Oggi"), h("span", null, h("i", { style: "background:var(--rose)" }), "Selezionato"))));
+    if (!bk.day || bk.day.slice(0, 7) !== bk.ym) return out;
+    // orari
+    var sl = byDay[bk.day] || [];
+    if (bk.slot && !sl.some(function (s) { return s.starts_at === bk.slot || new Date(s.starts_at).getTime() === new Date(bk.slot).getTime(); })) bk.slot = null;
+    if (bk.slot) sl.forEach(function (s) { if (new Date(s.starts_at).getTime() === new Date(bk.slot).getTime()) { bk.slot = s.starts_at; if (s.state !== "libero") bk.slot = null; } });
+    var slotBtn = function (s) {
+      var t = romeHM(s.starts_at);
+      if (s.state === "mia") return h("div", { class: "slot mine" }, t, h("small", null, "la tua lezione"));
+      if (s.state === "occupato") return h("div", { class: "slot full" }, h("span", { class: "t" }, t), h("small", null, "occupato"),
+        h("button", { class: "q", onclick: async function () {
+          try {
+            if (s.in_queue) { await q(sb.rpc("leave_queue", { p_starts_at: s.starts_at })); s.in_queue = false; toast("Sei uscita dalla coda"); }
+            else { await q(sb.rpc("join_queue", { p_starts_at: s.starts_at, p_mode: bk.mode })); s.in_queue = true; toast("Sei in coda: ti avvisiamo se si libera"); }
+            draw();
+          } catch (e) { fail(e); }
+        } }, s.in_queue ? "In coda ✓" : "Mettiti in coda"));
+      return h("button", { class: "slot" + (bk.slot === s.starts_at ? " on" : ""), onclick: function () { bk.slot = s.starts_at; draw(); setTimeout(function () { var c = document.getElementById("bk_pay"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); }, 50); } }, t);
+    };
+    var morning = sl.filter(function (s) { return romeHour(s.starts_at) < 13; }), afternoon = sl.filter(function (s) { return romeHour(s.starts_at) >= 13; });
+    out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, "3 · Orario"), h("h3", null, dayLabel(bk.day)),
+      morning.length ? [h("div", { class: "small muted", style: "margin:4px 0 8px" }, "Mattina"), h("div", { class: "slots" }, morning.map(slotBtn))] : null,
+      afternoon.length ? [h("div", { class: "small muted", style: "margin:14px 0 8px" }, "Pomeriggio"), h("div", { class: "slots" }, afternoon.map(slotBtn))] : null,
+      sl.some(function (s) { return s.state === "libero"; }) ? null : h("p", { class: "small muted", style: "margin-bottom:0" }, "Giorno al completo: mettiti in coda su un orario e ti avvisiamo appena si libera.")));
+    if (!bk.slot) return out;
+    // pagamento
+    var sub = coverSub(ctx, bk.day);
+    var payBox;
+    if (sub) {
+      bk.pay = "abbonamento";
+      payBox = h("div", { class: "tip" }, "Lezione inclusa nel tuo abbonamento «" + sub.plan_name + "»" +
+        (sub.lessons_included !== null ? ": dopo questa ti restano " + (sub.lessons_included - sub.used - 1) + " lezioni." : "."));
+    } else {
+      if (bk.pay === "abbonamento") bk.pay = null;
+      payBox = [h("div", { class: "opts" }, [["contanti", "Contanti", "Dopo la lezione"], ["carta", "Carta", "Dopo la lezione"]].map(function (p) {
+          return h("button", { class: "opt" + (bk.pay === p[0] ? " on" : ""), onclick: function () { bk.pay = p[0]; draw(); } }, h("strong", null, p[1]), h("span", null, p[2]));
+        })),
+        price(bk.mode) ? h("div", { class: "small muted", style: "margin-top:10px" }, "Importo: " + price(bk.mode)) : null,
+        bk.pay === "carta" ? h("div", { class: "tip" }, CARD_MSG) : null];
+    }
+    out.push(h("div", { class: "card", id: "bk_pay" }, h("div", { class: "eyebrow" }, "4 · Pagamento"), payBox));
+    out.push(h("div", { class: "card summary" },
+      h("div", { class: "eyebrow" }, "Riepilogo"),
+      h("h3", { style: "margin:0" }, slotLabel(bk.slot)),
+      h("div", { class: "small muted" }, MODE[bk.mode] + " · 60 minuti" + (bk.pay ? " · " + PAYM[bk.pay].toLowerCase() : "")),
+      h("button", { class: "btn block", disabled: bk.pay ? null : true, onclick: async function (e) {
+        e.target.disabled = true;
+        try {
+          await q(sb.rpc("book_lesson", { p_starts_at: bk.slot, p_mode: bk.mode, p_payment: bk.pay === "abbonamento" ? null : bk.pay }));
+          S.bk = null; toast("Lezione prenotata!"); go("lezioni");
+        } catch (er) { fail(er); loaded = null; bk.slot = null; draw(); }
+      } }, "Conferma prenotazione")));
+    return out;
+  }
+  await draw();
+  return [h("button", { class: "back", onclick: function () { S.bk = null; go("lezioni"); } }, "‹ Le mie lezioni"), h("h1", null, "Prenota una lezione"), box];
+};
+
+/* --- admin: agenda --- */
+VIEWS.agenda = async function () {
+  var sub = S.agSub || "agenda";
+  var subs = [["agenda", "Lezioni"], ["orari", "Orari"], ["impostazioni", "Impostazioni"]];
+  var content = await AG[sub]();
+  return [
+    h("div", { class: "row" }, h("h1", null, "Agenda"), sub === "agenda" ? h("button", { class: "btn sm", onclick: adminBook }, "+ Prenota") : null),
+    pushCard(),
+    h("div", { class: "subnav" }, subs.map(function (s) { return h("button", { class: sub === s[0] ? "on" : "", onclick: function () { S.agSub = s[0]; render(); } }, s[1]); })),
+    content
+  ];
+};
+var AG = {};
+AG.agenda = async function () {
+  var tday = romeDay(new Date());
+  var ws = S.agWeek || weekStartOf(tday), we = addDays(ws, 7);
+  var r = await Promise.all([
+    q(sb.from("bookings").select("*, profiles!bookings_client_id_fkey(full_name, username, phone), payments(status, amount_eur)").eq("status", "confermata").gte("starts_at", romeTs(ws, 0)).lt("starts_at", romeTs(we, 0)).order("starts_at")),
+    q(sb.from("booking_queue").select("starts_at, mode, profiles(full_name, username)").gte("starts_at", romeTs(ws, 0)).lt("starts_at", romeTs(we, 0))),
+    addDays(ws, 6) >= tday ? q(sb.rpc("get_slots", { p_from: ws < tday ? tday : ws, p_to: addDays(ws, 6) })) : []
+  ]);
+  var bks = r[0], queue = r[1], slots = r[2];
+  var nm = function (p) { return p ? (p.full_name || p.username) : ""; };
+  var days = [];
+  for (var i = 0; i < 7; i++) days.push(addDays(ws, i));
+  return [
+    h("div", { class: "row", style: "margin-bottom:10px" },
+      h("button", { class: "calnav", onclick: function () { S.agWeek = addDays(ws, -7); render(); } }, "‹"),
+      h("div", { style: "text-align:center" }, h("div", { class: "dayh", style: "margin:0" }, new Date(ws + "T12:00:00Z").toLocaleDateString("it-IT", { day: "numeric", month: "short", timeZone: "UTC" }) + " – " + new Date(addDays(ws, 6) + "T12:00:00Z").toLocaleDateString("it-IT", { day: "numeric", month: "short", timeZone: "UTC" })),
+        ws !== weekStartOf(tday) ? h("button", { class: "link small", onclick: function () { S.agWeek = null; render(); } }, "torna a oggi") : null),
+      h("button", { class: "calnav", onclick: function () { S.agWeek = addDays(ws, 7); render(); } }, "›")),
+    days.map(function (d) {
+      var db = bks.filter(function (b) { return romeDay(b.starts_at) === d; });
+      var free = slots.filter(function (s) { return romeDay(s.starts_at) === d && s.state === "libero"; }).length;
+      var anySlots = slots.some(function (s) { return romeDay(s.starts_at) === d; });
+      var info = d < tday ? "" : (anySlots ? (free ? free + (free === 1 ? " ora libera" : " ore libere") : "al completo") : (d === tday ? "" : "chiuso"));
+      return h("div", { class: "card" + (d === tday ? " today" : "") },
+        h("div", { class: "row" }, h("h3", { style: "margin:0" }, dayLabel(d)), h("span", { class: "small muted" }, info)),
+        db.length ? h("div", { class: "list" }, db.map(function (b) {
+          var qn = queue.filter(function (x) { return x.starts_at === b.starts_at || new Date(x.starts_at).getTime() === new Date(b.starts_at).getTime(); }).length;
+          var pay = b.payment_method === "abbonamento" ? h("span", { class: "pill ok" }, "abbonamento")
+            : (b.payments && b.payments.status === "pagato" ? h("span", { class: "pill ok" }, "pagata") : h("span", { class: "pill warn" }, b.payment_method === "carta" ? "carta · da contattare" : "contanti"));
+          return h("div", { class: "item", onclick: function () { bookingModal(b, qn); } },
+            h("div", { class: "time" }, romeHM(b.starts_at)),
+            h("div", { style: "flex:1" }, h("div", null, nm(b.profiles)),
+              h("div", { class: "chips" }, h("span", { class: "pill" }, MODE[b.mode]), pay,
+                b.mode === "online" && !b.meet_link ? h("span", { class: "pill warn" }, "link Meet mancante") : null,
+                qn ? h("span", { class: "pill off" }, qn + " in coda") : null)),
+            h("span", { class: "muted" }, "›"));
+        })) : h("div", { class: "small muted", style: "margin-top:6px" }, "Nessuna lezione."));
+    })
+  ];
+};
+function bookingModal(b, qn) {
+  var p = b.profiles || {};
+  var m = modal(p.full_name || p.username, [
+    h("p", { style: "margin-top:0" }, slotLabel(b.starts_at), h("br"), h("span", { class: "muted" }, MODE[b.mode] + " · " + PAYM[b.payment_method] +
+      (b.payments ? " · " + euro(b.payments.amount_eur) + " · " + PAY_ST[b.payments.status][0].toLowerCase() : ""))),
+    qn ? h("p", { class: "small muted" }, qn + (qn === 1 ? " persona in coda" : " persone in coda") + " per quest'ora: se annulli o sposti, vengono avvisate.") : null,
+    b.payment_method === "carta" ? h("div", { class: "tip" }, "Ha scelto di pagare con carta: va contattata per il pagamento.") : null,
+    p.phone ? h("p", { class: "small" }, h("a", { href: "https://wa.me/" + waNum(p.phone), target: "_blank", rel: "noopener" }, "Scrivi su WhatsApp (" + p.phone + ")")) : null,
+    b.mode === "online" ? [field("Link Google Meet", "bk_link", "url", b.meet_link, { placeholder: "https://meet.google.com/…" }),
+      h("a", { class: "small", href: "https://meet.google.com/new", target: "_blank", rel: "noopener" }, "Crea un nuovo link Meet")] : null,
+    h("div", { class: "row", style: "flex-wrap:wrap;justify-content:flex-start;gap:8px;margin-top:18px" },
+      b.payments && b.payments.status === "da_pagare" ? h("button", { class: "btn ghost sm", onclick: async function () {
+        try { await q(sb.from("payments").update({ status: "pagato", paid_on: today() }).eq("id", b.payment_id)); m.remove(); toast("Segnata come pagata"); render(); } catch (e) { fail(e); }
+      } }, "Segna pagata") : null,
+      h("button", { class: "btn ghost sm", onclick: function () { m.remove(); moveModal(b); } }, "Sposta"),
+      h("button", { class: "btn danger sm", onclick: function () { m.remove(); cancelModal(b); } }, "Annulla lezione"))
+  ], b.mode === "online" ? async function () {
+    var l = val("bk_link");
+    if (l && !/^https?:\/\//i.test(l)) { toast("Il link deve iniziare con https://"); return false; }
+    await q(sb.from("bookings").update({ meet_link: l }).eq("id", b.id));
+    toast(l ? "Link salvato: la cliente riceve un avviso" : "Link rimosso"); render();
+  } : null, "Salva link");
+}
+function cancelModal(b) {
+  var p = b.profiles || {};
+  modal("Annullare la lezione?", [
+    h("p", { style: "margin-top:0" }, (p.full_name || p.username) + " · " + slotLabel(b.starts_at)),
+    field("Motivo (facoltativo, lo legge la cliente)", "ca_r", "text", "", { placeholder: "es. imprevisto, recuperiamo la prossima settimana" }),
+    h("p", { class: "small muted" }, "La cliente riceve una notifica. " + (b.payment_method === "abbonamento" ? "La lezione torna disponibile nel suo abbonamento." : "Il pagamento previsto viene annullato."))
+  ], async function () {
+    await q(sb.rpc("cancel_booking", { p_id: b.id, p_reason: val("ca_r") }));
+    toast("Lezione annullata"); render();
+  }, "Annulla lezione");
+}
+function moveModal(b) {
+  modal("Sposta lezione", [
+    h("p", { class: "small muted", style: "margin-top:0" }, "Ora: " + slotLabel(b.starts_at)),
+    h("div", { class: "grid2" }, field("Nuovo giorno", "mv_d", "date", romeDay(b.starts_at)), select("Ora", "mv_h", hourOpts(6, 21).map(function (o) { return [String(+o[0].slice(0, 2)), o[1]]; }), String(romeHour(b.starts_at)))),
+    h("p", { class: "small muted" }, "Puoi scegliere anche un orario fuori dalle tue fasce. La cliente riceve una notifica.")
+  ], async function () {
+    if (!val("mv_d")) { toast("Scegli il giorno"); return false; }
+    await q(sb.rpc("move_booking", { p_id: b.id, p_new: romeTs(val("mv_d"), +$("#mv_h").value) }));
+    toast("Lezione spostata"); S.agWeek = weekStartOf(val("mv_d")); render();
+  }, "Sposta");
+}
+async function adminBook() {
+  var cl = await q(sb.from("profiles").select("id, full_name, username").eq("role", "client").eq("active", true).order("full_name"));
+  if (!cl.length) return toast("Nessun cliente attivo");
+  modal("Prenota per una cliente", [
+    select("Cliente", "ab_c", cl.map(function (c) { return [c.id, c.full_name || c.username]; }), cl[0].id),
+    h("div", { class: "grid2" }, field("Giorno", "ab_d", "date", romeDay(new Date())), select("Ora", "ab_h", hourOpts(6, 21).map(function (o) { return [String(+o[0].slice(0, 2)), o[1]]; }), "9")),
+    h("div", { class: "grid2" }, select("Tipo", "ab_m", [["presenza", "In presenza"], ["online", "Online"]], "presenza"), select("Pagamento", "ab_p", [["contanti", "Contanti"], ["carta", "Carta"]], "contanti")),
+    h("p", { class: "small muted" }, "Se la cliente ha un abbonamento valido, la lezione viene scalata dall'abbonamento. Riceve una notifica.")
+  ], async function () {
+    if (!val("ab_d")) { toast("Scegli il giorno"); return false; }
+    await q(sb.rpc("book_lesson", { p_starts_at: romeTs(val("ab_d"), +$("#ab_h").value), p_mode: $("#ab_m").value, p_payment: $("#ab_p").value, p_client: $("#ab_c").value }));
+    toast("Lezione prenotata"); S.agWeek = weekStartOf(val("ab_d")); render();
+  }, "Prenota");
+}
+AG.orari = async function () {
+  var r = await Promise.all([
+    q(sb.from("availability_weekly").select("*").order("weekday").order("start_time")),
+    q(sb.from("availability_exceptions").select("*").gte("day", romeDay(new Date())).order("day").order("start_time"))
+  ]);
+  var wk = r[0], ex = r[1];
+  var exDays = {}; ex.forEach(function (e) { (exDays[e.day] = exDays[e.day] || []).push(e); });
+  return [
+    h("div", { class: "card" }, h("h3", null, "Orario settimanale"),
+      h("p", { class: "small muted", style: "margin-top:0" }, "Le fasce in cui le clienti possono prenotare. Ogni lezione dura un'ora: con 09:00–18:00 l'ultima lezione inizia alle 17:00."),
+      h("div", { class: "list" }, WDL.map(function (d, i) {
+        var rs = wk.filter(function (x) { return x.weekday === i + 1; });
+        return h("div", { class: "item", style: "cursor:default" },
+          h("div", null, h("div", null, d), h("div", { class: "chips" }, rs.length ? rs.map(function (x) {
+            return h("span", { class: "chip" }, hm(x.start_time) + "–" + hm(x.end_time), h("button", { class: "x", "aria-label": "Togli", onclick: function () {
+              confirmDo("Togliere la fascia " + hm(x.start_time) + "–" + hm(x.end_time) + " del " + d.toLowerCase() + "?", async function () {
+                try { await q(sb.from("availability_weekly").delete().eq("id", x.id)); render(); } catch (e) { fail(e); }
+              }, "Togli");
+            } }, "×"));
+          }) : h("span", { class: "small muted" }, "Chiuso"))),
+          h("button", { class: "btn ghost sm", onclick: function () { rangeModal(i + 1, d); } }, "+ Fascia"));
+      }))),
+    h("div", { class: "card" }, h("div", { class: "row" }, h("h3", { style: "margin:0" }, "Giorni particolari"), h("button", { class: "btn sm", onclick: exceptionModal }, "+ Aggiungi")),
+      h("p", { class: "small muted" }, "Per una data precisa puoi chiudere tutto il giorno o mettere un orario diverso (es. lunedì 17 solo 09–14). Vale solo per quel giorno e sostituisce l'orario settimanale."),
+      Object.keys(exDays).length ? h("div", { class: "list" }, Object.keys(exDays).map(function (d) {
+        var rs = exDays[d], closed = rs.some(function (x) { return !x.start_time; });
+        return h("div", { class: "item", style: "cursor:default" },
+          h("div", null, h("div", null, dayLabel(d)),
+            h("div", { class: "chips" }, closed ? h("span", { class: "pill off" }, "chiuso") : rs.map(function (x) { return h("span", { class: "chip", style: "padding-right:10px" }, hm(x.start_time) + "–" + hm(x.end_time)); })),
+            rs[0].note ? h("div", { class: "small muted" }, rs[0].note) : null),
+          h("button", { class: "link small", onclick: function () {
+            confirmDo("Togliere l'eccezione del " + dayLabel(d).toLowerCase() + "? Tornerà valido l'orario settimanale.", async function () {
+              try { await q(sb.from("availability_exceptions").delete().eq("day", d)); render(); } catch (e) { fail(e); }
+            }, "Togli");
+          } }, "togli"));
+      })) : h("div", { class: "small muted" }, "Nessun giorno particolare impostato."))
+  ];
+};
+function rangeModal(wd, name) {
+  modal("Nuova fascia · " + name, [
+    h("div", { class: "grid2" }, select("Dalle", "rg_s", hourOpts(6, 22), "09:00"), select("Alle", "rg_e", hourOpts(7, 23), "18:00"))
+  ], async function () {
+    var s = $("#rg_s").value, e = $("#rg_e").value;
+    if (e <= s) { toast("L'orario di fine deve essere dopo l'inizio"); return false; }
+    await q(sb.from("availability_weekly").insert({ weekday: wd, start_time: s, end_time: e }));
+    render();
+  });
+}
+function exceptionModal() {
+  var rangeBox = h("div", { class: "grid2" }, select("Dalle", "xe_s", hourOpts(6, 22), "09:00"), select("Alle", "xe_e", hourOpts(7, 23), "14:00"));
+  modal("Giorno particolare", [
+    field("Data", "xe_d", "date", romeDay(new Date())),
+    select("Quel giorno", "xe_t", [["orario", "Orario diverso dal solito"], ["chiuso", "Chiuso tutto il giorno"]], "orario"),
+    rangeBox,
+    field("Nota (facoltativa, solo per te)", "xe_n", "text", "", { placeholder: "es. impegno nel pomeriggio" })
+  ], async function () {
+    var d = val("xe_d"), t = $("#xe_t").value, s = $("#xe_s").value, e = $("#xe_e").value;
+    if (!d) { toast("Scegli la data"); return false; }
+    if (t === "orario" && e <= s) { toast("L'orario di fine deve essere dopo l'inizio"); return false; }
+    var cur = await q(sb.from("availability_exceptions").select("id, start_time").eq("day", d));
+    if (t === "chiuso" || cur.some(function (x) { return !x.start_time; })) await q(sb.from("availability_exceptions").delete().eq("day", d));
+    await q(sb.from("availability_exceptions").insert(t === "chiuso" ? { day: d, note: val("xe_n") } : { day: d, start_time: s, end_time: e, note: val("xe_n") }));
+    var bk = await q(sb.from("bookings").select("starts_at").eq("status", "confermata").gte("starts_at", romeTs(d, 0)).lt("starts_at", romeTs(addDays(d, 1), 0)));
+    var out = bk.filter(function (b) { var hh = romeHour(b.starts_at); return t === "chiuso" || hh < +s.slice(0, 2) || hh + 1 > +e.slice(0, 2); });
+    if (out.length) toast("Attenzione: " + out.length + (out.length === 1 ? " lezione già prenotata" : " lezioni già prenotate") + " fuori dal nuovo orario. Spostale o annullale da Lezioni.");
+    render();
+  });
+  var sync = function () { rangeBox.style.display = $("#xe_t").value === "chiuso" ? "none" : ""; };
+  $("#xe_t").addEventListener("change", sync);
+}
+AG.impostazioni = async function () {
+  var st = await q(sb.from("booking_settings").select("*").eq("id", 1).single());
+  return h("div", { class: "card" },
+    h("h3", null, "Prenotazioni"),
+    h("div", { class: "grid2" }, field("Prezzo lezione in presenza (€)", "bs_pp", "text", st.price_presenza_eur, { inputmode: "decimal" }), field("Prezzo lezione online (€)", "bs_po", "text", st.price_online_eur, { inputmode: "decimal" })),
+    h("p", { class: "small muted" }, "Il prezzo vale per chi non ha un abbonamento: alla prenotazione viene creato il pagamento da incassare (lo trovi in Scadenze)."),
+    field("Lezioni prenotabili alla volta per cliente", "bs_max", "number", st.max_active_bookings, { inputmode: "numeric" }),
+    field("Indirizzo della palestra (lo vede la cliente)", "bs_addr", "text", st.gym_address),
+    h("button", { class: "btn block", onclick: async function () {
+      try {
+        await q(sb.from("booking_settings").update({ price_presenza_eur: num("bs_pp"), price_online_eur: num("bs_po"), max_active_bookings: num("bs_max") || 3, gym_address: val("bs_addr"), updated_at: new Date().toISOString() }).eq("id", 1));
+        toast("Impostazioni salvate");
+      } catch (e) { fail(e); }
+    } }, "Salva"));
+};
+
 /* --- profilo (tutti) --- */
 VIEWS.profilo = async function () {
   return [
@@ -792,6 +1281,7 @@ VIEWS.profilo = async function () {
         if (r.error) return fail(r.error);
         $("#pf_1").value = $("#pf_2").value = ""; toast("Password aggiornata");
       } }, "Aggiorna password")),
+    pushCard(true),
     h("div", { class: "card install small" },
       h("h3", null, "Installa l'app sul telefono"),
       h("p", null, h("strong", null, "iPhone: "), "apri questa pagina in Safari, tocca Condividi e poi “Aggiungi alla schermata Home”."),
@@ -802,5 +1292,13 @@ VIEWS.profilo = async function () {
 
 /* ---------- avvio ---------- */
 sb.auth.onAuthStateChange(function (ev) { if (ev === "SIGNED_OUT" && S.me) { S.me = null; renderLogin(); } });
-if ("serviceWorker" in navigator) window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+  navigator.serviceWorker.addEventListener("message", function (e) {
+    if (!S.me || !e.data) return;
+    if (e.data.type === "notif") { updateBell(); if (S.tab === "lezioni" || S.tab === "agenda" || (S.view && S.view.name === "notifiche")) render(); }
+    if (e.data.type === "open") openView({ name: "notifiche" });
+  });
+}
+document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible" && S.me) updateBell(); });
 boot();
