@@ -1,14 +1,26 @@
 /* Service worker: rete prima, cache come riserva per i file dell'app */
-var CACHE = "lr-v4";
-var SHELL = ["./", "index.html", "style.css?v=4", "app.js?v=4", "manifest.webmanifest", "icon-192.png"];
+var CACHE = "lr-v5";
+var SHELL = ["./", "index.html", "style.css?v=5", "app.js?v=5", "manifest.webmanifest", "icon-192.png"];
 self.addEventListener("install", function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); })); self.skipWaiting(); });
 self.addEventListener("activate", function (e) {
   e.waitUntil(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); })); }));
   self.clients.claim();
 });
+var CDN = /^https:\/\/(cdn\.jsdelivr\.net|fonts\.googleapis\.com|fonts\.gstatic\.com)$/;
 self.addEventListener("fetch", function (e) {
   var u = new URL(e.request.url);
-  if (e.request.method !== "GET" || u.origin !== location.origin) return;
+  if (e.request.method !== "GET") return;
+  if (CDN.test(u.origin)) {
+    /* librerie e font: dalla cache se ci sono (così l'app si apre anche offline), aggiornati in background */
+    e.respondWith(caches.open(CACHE).then(function (c) {
+      return c.match(e.request).then(function (hit) {
+        var net = fetch(e.request).then(function (r) { if (r.ok || r.type === "opaque") c.put(e.request, r.clone()); return r; }).catch(function () { return hit; });
+        return hit || net;
+      });
+    }));
+    return;
+  }
+  if (u.origin !== location.origin) return;
   e.respondWith(fetch(e.request).then(function (r) {
     var copy = r.clone(); caches.open(CACHE).then(function (c) { c.put(e.request, copy); }); return r;
   }).catch(function () { return caches.match(e.request).then(function (r) { return r || caches.match("index.html"); }); }));

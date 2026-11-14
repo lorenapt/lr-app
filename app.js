@@ -47,6 +47,16 @@ function traduci(m) {
   return m;
 }
 async function q(promise) { var r = await promise; if (r.error) throw r.error; return r.data; }
+/* dati salvati sul telefono per l'uso senza connessione */
+function isNetErr(e) { var m = (e && (e.message || String(e))) || ""; return !navigator.onLine || /fetch|network|load failed/i.test(m); }
+function lsGet(k) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* spazio pieno */ } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* niente */ } }
+async function cq(key, fn) {
+  var k = "lr-c-" + (S.user ? S.user.id : "x") + "-" + key;
+  try { var d = await fn(); lsSet(k, d); S.offline = false; return d; }
+  catch (e) { var c = lsGet(k); if (c !== null && isNetErr(e)) { S.offline = true; return c; } throw e; }
+}
 function field(lbl, id, type, value, extra) {
   var a = Object.assign({ id: id, type: type || "text", value: value === null || value === undefined ? "" : value }, extra || {});
   return h("div", null, h("label", { for: id }, lbl), type === "textarea" ? h("textarea", a) : h("input", a));
@@ -132,14 +142,17 @@ async function boot() {
 }
 async function afterLogin(user) {
   S.user = user;
-  try { S.me = await q(sb.from("profiles").select("*").eq("id", user.id).single()); }
+  try { S.me = await cq("me", function () { return q(sb.from("profiles").select("*").eq("id", user.id).single()); }); }
   catch (e) { fail(e); await sb.auth.signOut(); return renderLogin(); }
   if (!S.me.active && S.me.role !== "admin") { await sb.auth.signOut(); return renderLogin("Account non attivo. Contatta la tua personal trainer."); }
+  if (S.me.role === "client" && !S.me.privacy_accepted_at) return renderPrivacy();
+  if (S.me.role === "client" && S.me.must_change_password) return renderFirstPassword();
   S.tab = S.me.role === "admin" ? "clienti" : "allenamento";
   S.view = null;
   if (/[?&]v=notifiche/.test(location.search)) { S.view = { name: "notifiche" }; try { history.replaceState(null, "", location.pathname); } catch (e) { /* niente */ } }
   render();
   syncPush(false).catch(function () {});
+  flushOutbox();
 }
 function renderLogin(msg) {
   root.innerHTML = "";
@@ -165,14 +178,68 @@ function renderLogin(msg) {
     h("p", { class: "small muted", style: "text-align:center;margin-top:28px" }, "Hai dimenticato la password? Scrivi a Lorena su WhatsApp."));
   root.appendChild(form);
 }
+/* ---------- primo accesso: privacy e nuova password ---------- */
+function gateShell(children) {
+  root.innerHTML = "";
+  root.appendChild(h("div", { class: "login", style: "justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 40px)" }, h("div", { class: "mono" }, "LR"), children));
+}
+async function renderPrivacy() {
+  var txt = "";
+  try { var st = await q(sb.from("booking_settings").select("privacy_text").eq("id", 1).single()); txt = st.privacy_text || ""; } catch (e) { /* niente */ }
+  var chk = h("input", { type: "checkbox", id: "pv_ok", style: "width:auto;margin-top:3px", onchange: function () { btn.disabled = !chk.checked; } });
+  var btn = h("button", { class: "btn block", disabled: true, onclick: async function () {
+    btn.disabled = true;
+    try { await q(sb.rpc("accept_privacy")); S.me.privacy_accepted_at = new Date().toISOString(); lsDel("lr-c-" + S.user.id + "-me"); afterLogin(S.user); }
+    catch (e) { fail(e); btn.disabled = false; }
+  } }, "Continua");
+  gateShell([
+    h("h1", null, "Ti diamo il benvenuto"),
+    h("p", { class: "muted", style: "text-align:center" }, "Prima di iniziare, una cosa importante sui tuoi dati."),
+    h("div", { class: "card small" }, h("p", { style: "margin-top:0" }, "In questa app salverai allenamenti e carichi e, con Lorena, misure, peso, foto dei progressi e check-in. Sono dati personali e in parte relativi alla salute."),
+      h("p", { style: "margin-bottom:0" }, "Li vedete solo tu e Lorena, non li cediamo a nessuno e puoi chiederne la cancellazione quando vuoi."),
+      txt ? h("details", { style: "margin-top:10px" }, h("summary", { style: "cursor:pointer;color:var(--rose-d)" }, "Leggi l'informativa completa"), h("div", { class: "small", style: "white-space:pre-wrap;margin-top:8px" }, txt)) : null),
+    h("label", { for: "pv_ok", style: "display:flex;gap:10px;align-items:flex-start;text-transform:none;letter-spacing:0;font-size:.92rem;color:var(--ink)" }, chk,
+      h("span", null, "Ho letto l'informativa e acconsento al trattamento dei miei dati, compresi quelli relativi alla salute, per il servizio di personal training.")),
+    btn,
+    h("button", { class: "link small", style: "margin-top:18px;align-self:center", onclick: logout }, "Esci")
+  ]);
+}
+function renderFirstPassword() {
+  var err = h("div", { class: "err" });
+  gateShell([
+    h("h1", null, "Scegli la tua password"),
+    h("p", { class: "muted", style: "text-align:center" }, "La password che hai ricevuto è provvisoria. Scegline una tua: la userai per entrare d'ora in poi."),
+    field("Nuova password (min. 8 caratteri)", "fp_1", "password", "", { autocomplete: "new-password" }),
+    field("Ripeti la password", "fp_2", "password", "", { autocomplete: "new-password" }),
+    h("button", { class: "btn block", onclick: async function (e) {
+      var a = $("#fp_1").value, b = $("#fp_2").value; err.textContent = "";
+      if (a.length < 8) { err.textContent = "Almeno 8 caratteri"; return; }
+      if (a !== b) { err.textContent = "Le due password non coincidono"; return; }
+      e.target.disabled = true;
+      var r = await sb.auth.updateUser({ password: a });
+      if (r.error && !/same_password|different from the old/i.test(r.error.message)) { err.textContent = traduci(r.error.message); e.target.disabled = false; return; }
+      if (r.error) { err.textContent = "Scegli una password diversa da quella provvisoria"; e.target.disabled = false; return; }
+      try { await q(sb.rpc("password_changed")); } catch (er) { /* niente */ }
+      S.me.must_change_password = false; lsDel("lr-c-" + S.user.id + "-me"); toast("Password salvata"); afterLogin(S.user);
+    } }, "Salva password"),
+    err,
+    h("button", { class: "link small", style: "margin-top:18px;align-self:center", onclick: logout }, "Esci")
+  ]);
+}
+function showPrivacyText() {
+  q(sb.from("booking_settings").select("privacy_text").eq("id", 1).single()).then(function (st) {
+    modal("Informativa privacy", h("div", { class: "small", style: "white-space:pre-wrap" }, st.privacy_text || "Informativa non ancora disponibile."));
+  }).catch(fail);
+}
 async function logout() { await unregisterPush(); S.pushOk = false; await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
 
 /* ---------- shell ---------- */
 var ADMIN_TABS = [["clienti", "Clienti", "♡"], ["agenda", "Agenda", "◷"], ["esercizi", "Esercizi", "◇"], ["scadenze", "Scadenze", "€"], ["profilo", "Profilo", "○"]];
-var CLIENT_TABS = [["allenamento", "Allenati", "♡"], ["lezioni", "Lezioni", "◷"], ["progressi", "Progressi", "↗"], ["obiettivi", "Obiettivi", "◇"], ["profilo", "Profilo", "○"]];
+var CLIENT_TABS = [["allenamento", "Oggi", "♡"], ["lezioni", "Lezioni", "◷"], ["progressi", "Progressi", "↗"], ["obiettivi", "Obiettivi", "◇"], ["profilo", "Profilo", "○"]];
 function go(tab, view) { S.tab = tab; S.view = view || null; render(); window.scrollTo(0, 0); }
 function openView(view) { S.view = view; render(); window.scrollTo(0, 0); }
 async function render() {
+  stopRest();
   root.innerHTML = "";
   var main = h("div", { class: "wrap" });
   var tabs = S.me.role === "admin" ? ADMIN_TABS : CLIENT_TABS;
@@ -190,25 +257,62 @@ async function render() {
     var fn = VIEWS[S.view ? S.view.name : S.tab];
     var out = await fn(S.view || {});
     body.innerHTML = ""; add(body, out);
-  } catch (e) { body.innerHTML = ""; body.appendChild(h("div", { class: "empty" }, "Impossibile caricare i dati.")); fail(e); }
+    if (S.offline) body.insertBefore(h("div", { class: "offline" }, "Sei offline: stai vedendo i dati salvati sul telefono."), body.firstChild);
+  } catch (e) {
+    body.innerHTML = "";
+    if (isNetErr(e)) body.appendChild(h("div", { class: "card empty" }, "Sei offline: questa sezione si aggiorna appena torna la connessione."));
+    else { body.appendChild(h("div", { class: "empty" }, "Impossibile caricare i dati.")); fail(e); }
+  }
 }
 var VIEWS = {};
 
 /* =================== AREA ADMIN =================== */
 VIEWS.clienti = async function () {
-  var clients = await q(sb.from("profiles").select("*").eq("role", "client").order("full_name"));
+  var r = await Promise.all([
+    q(sb.from("profiles").select("*").eq("role", "client").order("full_name")),
+    q(sb.from("workout_logs").select("client_id, performed_on").gte("performed_on", addDays(today(), -180)).order("performed_on", { ascending: false })),
+    q(sb.from("checkins").select("client_id").eq("week_start", weekStartOf(romeDay(new Date()))))
+  ]);
+  var clients = r[0], last = {}, ck = {};
+  r[1].forEach(function (l) { if (!last[l.client_id]) last[l.client_id] = l.performed_on; });
+  r[2].forEach(function (c) { ck[c.client_id] = true; });
+  var since = function (d) { return Math.round((new Date(today() + "T12:00:00Z") - new Date(d + "T12:00:00Z")) / 864e5); };
   var showAll = S.showInactive;
   var list = clients.filter(function (c) { return showAll || c.active; });
+  var idle = clients.filter(function (c) {
+    if (!c.active) return false;
+    return last[c.id] ? since(last[c.id]) >= 10 : since(String(c.created_at).slice(0, 10)) >= 10;
+  });
+  var lastTxt = function (c) { return last[c.id] ? (since(last[c.id]) === 0 ? "allenata oggi" : "ultimo allenamento " + since(last[c.id]) + " gg fa") : "nessun allenamento"; };
   return [
     h("div", { class: "row" }, h("h1", null, "Clienti"), h("button", { class: "btn sm", onclick: newClient }, "+ Nuovo")),
+    idle.length ? h("div", { class: "card freed" }, h("div", { class: "eyebrow" }, "Da ricontattare · nessun allenamento da 10+ giorni"),
+      h("div", { class: "list" }, idle.map(function (c) {
+        var wa = c.phone ? waLink(c.phone, "Ciao " + firstName(c) + ", come stai? È da qualche giorno che non ti vedo allenarti, va tutto bene?") : null;
+        return h("div", { class: "item", style: "cursor:default" },
+          h("div", { style: "cursor:pointer", onclick: function () { openView({ name: "cliente", id: c.id, sub: "diario" }); } }, h("div", null, c.full_name || c.username), h("div", { class: "small muted" }, last[c.id] ? "ultimo allenamento il " + fmtDate(last[c.id]) : "non ha ancora registrato allenamenti")),
+          wa ? h("a", { class: "btn ghost sm", href: wa, target: "_blank", rel: "noopener" }, "WhatsApp") : h("span", { class: "small muted" }, "senza telefono"));
+      }))) : null,
     h("div", { class: "card list" }, list.length ? list.map(function (c) {
       return h("div", { class: "item", onclick: function () { openView({ name: "cliente", id: c.id, sub: "scheda" }); } },
-        h("div", null, h("div", null, c.full_name || c.username), h("div", { class: "small muted" }, "@" + c.username + (c.training_mode ? " · " + c.training_mode : ""))),
+        h("div", null, h("div", null, c.full_name || c.username), h("div", { class: "small muted" }, "@" + c.username + (c.training_mode ? " · " + c.training_mode : "") + " · " + lastTxt(c) + (ck[c.id] ? " · check-in ✓" : ""))),
         c.active ? h("span", { class: "muted" }, "›") : h("span", { class: "pill off" }, "non attivo"));
     }) : h("div", { class: "empty" }, "Nessun cliente. Crea il primo con “+ Nuovo”.")),
-    h("button", { class: "link small", onclick: function () { S.showInactive = !showAll; render(); } }, showAll ? "Nascondi clienti non attivi" : "Mostra anche clienti non attivi")
+    h("div", { class: "row", style: "justify-content:space-between" },
+      h("button", { class: "link small", onclick: function () { S.showInactive = !showAll; render(); } }, showAll ? "Nascondi clienti non attivi" : "Mostra anche clienti non attivi"),
+      clients.some(function (c) { return c.active; }) ? h("button", { class: "btn ghost sm", onclick: function () { msgModal(clients.filter(function (c) { return c.active; }).map(function (c) { return c.id; }), null); } }, "Messaggio a tutte") : null)
   ];
 };
+function msgModal(ids, label) {
+  modal(label ? "Messaggio a " + label : "Messaggio a tutte le clienti", [
+    field("Messaggio", "mm_t", "textarea", "", { placeholder: label ? "es. Brava per questa settimana! Lunedì aumentiamo il carico nello squat." : "es. Settimana prossima la palestra è chiusa giovedì." }),
+    h("p", { class: "small muted" }, "Arriva come notifica e resta in evidenza nella home della cliente per tre settimane.")
+  ], async function () {
+    var t = val("mm_t"); if (!t) { toast("Scrivi il messaggio"); return false; }
+    await q(sb.from("notifications").insert(ids.map(function (id) { return { user_id: id, kind: "messaggio", title: "Messaggio da " + (firstName(S.me) || "Lorena"), body: t }; })));
+    toast(ids.length === 1 ? "Messaggio inviato" : "Messaggio inviato a " + ids.length + " clienti");
+  }, "Invia");
+}
 function newClient() {
   modal("Nuovo cliente", [
     field("Nome e cognome", "nc_name"),
@@ -228,11 +332,11 @@ function newClient() {
 
 VIEWS.cliente = async function (v) {
   var c = await q(sb.from("profiles").select("*").eq("id", v.id).single());
-  var subs = [["scheda", "Schede"], ["diario", "Diario"], ["misure", "Misure"], ["obiettivi", "Obiettivi"], ["pagamenti", "Pagamenti"], ["note", "Note"], ["account", "Account"]];
+  var subs = [["scheda", "Schede"], ["diario", "Diario"], ["carichi", "Carichi"], ["misure", "Misure"], ["obiettivi", "Obiettivi"], ["checkin", "Check-in"], ["foto", "Foto"], ["pagamenti", "Pagamenti"], ["note", "Note"], ["account", "Account"]];
   var content = await CLIENT_SUB[v.sub](c, v);
   return [
     h("button", { class: "back", onclick: function () { go("clienti"); } }, "‹ Tutti i clienti"),
-    h("h1", null, c.full_name || c.username),
+    h("div", { class: "row" }, h("h1", null, c.full_name || c.username), h("button", { class: "btn ghost sm", onclick: function () { msgModal([c.id], firstName(c)); } }, "Messaggio")),
     h("div", { class: "small muted", style: "margin-top:-6px" }, "@" + c.username + (c.phone ? " · " + c.phone : "")),
     h("div", { class: "subnav" }, subs.map(function (s) {
       return h("button", { class: v.sub === s[0] ? "on" : "", onclick: function () { openView({ name: "cliente", id: v.id, sub: s[0] }); } }, s[1]);
@@ -241,6 +345,9 @@ VIEWS.cliente = async function (v) {
   ];
 };
 var CLIENT_SUB = {};
+CLIENT_SUB.carichi = async function (c) { return [h("h2", null, "Carichi e record"), await loadsView(c.id)]; };
+CLIENT_SUB.checkin = async function (c) { return [h("h2", null, "Check-in settimanali"), await checkinsView(c.id)]; };
+CLIENT_SUB.foto = async function (c) { return [h("h2", null, "Foto dei progressi"), await photosView(c.id, true, function () { reloadClient(c, "foto"); })]; };
 function reloadClient(c, sub, extra) { openView(Object.assign({ name: "cliente", id: c.id, sub: sub }, extra || {})); }
 
 /* --- schede --- */
@@ -404,7 +511,7 @@ async function editProgEx(c, d, e, pos) {
 /* --- diario (visto dall'admin) --- */
 CLIENT_SUB.diario = async function (c) { return [h("h2", null, "Diario allenamenti"), await workoutHistory(c.id)]; };
 async function workoutHistory(clientId) {
-  var logs = await q(sb.from("workout_logs").select("*, program_days(name), set_logs(*, exercises(name))").eq("client_id", clientId).order("performed_on", { ascending: false }).limit(40));
+  var logs = await cq("hist-" + clientId, function () { return q(sb.from("workout_logs").select("*, program_days(name), set_logs(*, exercises(name))").eq("client_id", clientId).order("performed_on", { ascending: false }).limit(40)); });
   if (!logs.length) return h("div", { class: "card empty" }, "Nessun allenamento registrato.");
   return logs.map(function (w) {
     var byEx = {};
@@ -427,23 +534,37 @@ var MEAS = [["weight_kg", "Peso", "kg"], ["body_fat_pct", "Massa grassa", "%"], 
 CLIENT_SUB.misure = async function (c) {
   return [h("div", { class: "row" }, h("h2", null, "Misure"), h("button", { class: "btn sm", onclick: function () { editMeasure(c); } }, "+ Nuova")), await measuresView(c.id, c)];
 };
+/* --- misure a schede con variazione --- */
 async function measuresView(clientId, adminClient) {
-  var ms = await q(sb.from("measurements").select("*").eq("client_id", clientId).order("measured_on"));
+  var ms = await cq("meas-" + clientId, function () { return q(sb.from("measurements").select("*").eq("client_id", clientId).order("measured_on")); });
   if (!ms.length) return h("div", { class: "card empty" }, "Nessuna misura registrata.");
+  var tiles = MEAS.map(function (k) {
+    var vs = ms.filter(function (m) { return m[k[0]] !== null; });
+    if (!vs.length) return null;
+    var f = vs[0], l = vs[vs.length - 1], dlt = Math.round((Number(l[k[0]]) - Number(f[k[0]])) * 10) / 10;
+    return h("div", { class: "tile" }, h("div", { class: "eyebrow", style: "margin:0" }, k[1]),
+      h("div", { class: "tv" }, n2(l[k[0]]), h("small", null, " " + k[2])),
+      vs.length > 1 ? h("div", { class: "small muted" }, (dlt > 0 ? "+" : dlt < 0 ? "−" : "±") + n2(Math.abs(dlt)) + " " + k[2] + " dal " + fmtDate(f.measured_on)) : h("div", { class: "small muted" }, fmtDate(l.measured_on)));
+  }).filter(Boolean);
   var w = ms.filter(function (m) { return m.weight_kg !== null; }).map(function (m) { return { x: m.measured_on, y: Number(m.weight_kg) }; });
   var rev = ms.slice().reverse();
+  var table = h("div", { class: "scroll" }, h("table", null,
+    h("thead", null, h("tr", null, h("th", null, "Data"), MEAS.map(function (m) { return h("th", null, m[1] + " (" + m[2] + ")"); }))),
+    h("tbody", null, rev.map(function (m) {
+      return h("tr", { style: adminClient ? "cursor:pointer" : null, onclick: adminClient ? function () { editMeasure(adminClient, m); } : null },
+        h("td", null, fmtDate(m.measured_on)), MEAS.map(function (k) { return h("td", null, m[k[0]] !== null ? String(m[k[0]]).replace(".", ",") : "—"); }));
+    }))));
   return [
+    h("div", { class: "small muted", style: "margin:-4px 0 10px" }, "Ultima misurazione: " + fmtDate(rev[0].measured_on)),
+    h("div", { class: "tiles" }, tiles),
     w.length > 1 ? h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Andamento peso"), lineChart(w, "kg")) : null,
-    h("div", { class: "card scroll" }, h("table", null,
-      h("thead", null, h("tr", null, h("th", null, "Data"), MEAS.map(function (m) { return h("th", null, m[1] + " (" + m[2] + ")"); }))),
-      h("tbody", null, rev.map(function (m) {
-        return h("tr", { style: adminClient ? "cursor:pointer" : null, onclick: adminClient ? function () { editMeasure(adminClient, m); } : null },
-          h("td", null, fmtDate(m.measured_on)), MEAS.map(function (k) { return h("td", null, m[k[0]] !== null ? String(m[k[0]]).replace(".", ",") : "—"); }));
-      })))),
-    rev[0].notes ? h("div", { class: "tip" }, rev[0].notes) : null
+    rev[0].notes ? h("div", { class: "tip", style: "margin-bottom:14px" }, rev[0].notes) : null,
+    adminClient ? h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Storico (tocca una riga per modificarla)"), table)
+      : h("details", { class: "card" }, h("summary", { class: "eyebrow", style: "cursor:pointer;margin:0" }, "Vedi tutte le misurazioni"), table)
   ];
 }
 function editMeasure(c, m) {
+
   m = m || {};
   modal(m.id ? "Modifica misure" : "Nuove misure", [
     field("Data", "ms_d", "date", m.measured_on || today()),
@@ -466,14 +587,20 @@ CLIENT_SUB.obiettivi = async function (c) {
   return [h("div", { class: "row" }, h("h2", null, "Obiettivi"), h("button", { class: "btn sm", onclick: function () { editGoal(c); } }, "+ Nuovo")), await goalsView(c.id, c)];
 };
 async function goalsView(clientId, adminClient) {
-  var gs = await q(sb.from("goals").select("*").eq("client_id", clientId).order("created_at", { ascending: false }));
+  var gs = await cq("goals-" + clientId, function () { return q(sb.from("goals").select("*").eq("client_id", clientId).order("created_at", { ascending: false })); });
   if (!gs.length) return h("div", { class: "card empty" }, "Nessun obiettivo impostato.");
   return gs.map(function (g) {
-    var st = GOAL_ST[g.status];
+    var st = GOAL_ST[g.status], u = g.unit ? " " + g.unit : "";
+    var hasBar = g.target_value !== null && g.start_value !== null && g.current_value !== null && Number(g.target_value) !== Number(g.start_value);
+    var pct = hasBar ? Math.max(0, Math.min(1, (g.current_value - g.start_value) / (g.target_value - g.start_value))) : (g.status === "raggiunto" ? 1 : null);
     return h("div", { class: "card" + (adminClient ? " tap" : ""), onclick: adminClient ? function () { editGoal(adminClient, g); } : null },
       h("div", { class: "row" }, h("h3", null, g.title), h("span", { class: "pill " + st[1] }, st[0])),
       g.description ? h("p", { class: "small" }, g.description) : null,
-      h("div", { class: "small muted" }, [g.target_value !== null ? "Traguardo: " + n2(g.target_value) + " " + (g.unit || "") : null, g.deadline ? "entro il " + fmtDate(g.deadline) : null, g.achieved_on ? "raggiunto il " + fmtDate(g.achieved_on) : null].filter(Boolean).join(" · ")));
+      pct !== null ? h("div", { class: "bar" }, h("i", { style: "width:" + Math.round(pct * 100) + "%" })) : null,
+      pct !== null ? h("div", { class: "small", style: "margin-top:4px;color:var(--rose-d)" }, Math.round(pct * 100) + "% del percorso") : null,
+      h("div", { class: "small muted", style: "margin-top:4px" }, [g.start_value !== null ? "Partenza " + n2(g.start_value) + u : null, g.current_value !== null ? "Attuale " + n2(g.current_value) + u : null,
+        g.target_value !== null ? "Obiettivo " + n2(g.target_value) + u : null].filter(Boolean).join(" · ")),
+      h("div", { class: "small muted" }, [g.deadline ? "entro il " + fmtDate(g.deadline) : null, g.achieved_on ? "raggiunto il " + fmtDate(g.achieved_on) : null].filter(Boolean).join(" · ")));
   });
 }
 function editGoal(c, g) {
@@ -481,7 +608,9 @@ function editGoal(c, g) {
   modal(g.id ? "Modifica obiettivo" : "Nuovo obiettivo", [
     field("Obiettivo", "gl_t", "text", g.title, { placeholder: "es. Squat con 40 kg" }),
     field("Descrizione", "gl_d", "textarea", g.description),
-    h("div", { class: "grid2" }, field("Valore obiettivo", "gl_v", "text", g.target_value, { inputmode: "decimal" }), field("Unità", "gl_u", "text", g.unit, { placeholder: "kg, cm, min" })),
+    h("div", { class: "grid3" }, field("Partenza", "gl_sv", "text", g.start_value, { inputmode: "decimal" }), field("Attuale", "gl_cv", "text", g.current_value, { inputmode: "decimal" }), field("Obiettivo", "gl_v", "text", g.target_value, { inputmode: "decimal" })),
+    field("Unità", "gl_u", "text", g.unit, { placeholder: "kg, cm, min" }),
+    h("p", { class: "small muted" }, "Con partenza, attuale e obiettivo la cliente vede una barra di avanzamento. Aggiorna il valore attuale quando la rivedi."),
     field("Scadenza", "gl_dl", "date", g.deadline),
     select("Stato", "gl_s", [["in_corso", "In corso"], ["raggiunto", "Raggiunto"], ["sospeso", "Sospeso"]], g.status || "in_corso"),
     g.id ? h("button", { class: "btn danger sm", style: "margin-top:16px", onclick: function () {
@@ -489,7 +618,7 @@ function editGoal(c, g) {
     } }, "Elimina") : null
   ], async function () {
     var st = $("#gl_s").value;
-    var row = { client_id: c.id, title: val("gl_t"), description: val("gl_d"), target_value: num("gl_v"), unit: val("gl_u"), deadline: val("gl_dl"), status: st,
+    var row = { client_id: c.id, title: val("gl_t"), description: val("gl_d"), start_value: num("gl_sv"), current_value: num("gl_cv"), target_value: num("gl_v"), unit: val("gl_u"), deadline: val("gl_dl"), status: st,
       achieved_on: st === "raggiunto" ? (g.achieved_on || today()) : null };
     if (!row.title) { toast("Inserisci l'obiettivo"); return false; }
     if (g.id) await q(sb.from("goals").update(row).eq("id", g.id)); else await q(sb.from("goals").insert(row));
@@ -682,74 +811,196 @@ VIEWS.scadenze = async function () {
 };
 
 /* =================== AREA CLIENTE =================== */
+/* --- home "Oggi" --- */
+function draftKey(dayId) { return "lr-draft-" + S.me.id + "-" + dayId; }
+function getDraft(dayId) { var d = lsGet(draftKey(dayId)); return d && d.ts && Date.now() - d.ts < 12 * 3600e3 ? d : null; }
+function firstName(p) { return ((p && (p.full_name || p.username)) || "").split(" ")[0]; }
+function waLink(num, text) { return num ? "https://wa.me/" + waNum(num) + (text ? "?text=" + encodeURIComponent(text) : "") : null; }
 VIEWS.allenamento = async function () {
-  var progs = await q(sb.from("programs").select("*, program_days(*, program_exercises(id))").eq("client_id", S.me.id).eq("active", true).order("created_at", { ascending: false }));
-  var last = await q(sb.from("workout_logs").select("performed_on, day_id").eq("client_id", S.me.id).order("performed_on", { ascending: false }).limit(1));
-  var nome = (S.me.full_name || "").split(" ")[0];
-  var out = [h("div", { class: "eyebrow" }, new Date().toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" })),
-    h("h1", null, "Ciao" + (nome ? " " + nome : "") + ","), h("p", { class: "muted", style: "margin-top:-8px" }, last.length ? "Ultimo allenamento: " + fmtDate(last[0].performed_on) : "Il tuo primo allenamento ti aspetta.")];
-  if (!progs.length) { out.push(h("div", { class: "card empty" }, "La tua scheda è in preparazione. A presto!")); return out; }
-  progs.forEach(function (p) {
-    out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, "La tua scheda"), h("h2", null, p.title),
-      p.description ? h("p", { class: "small" }, p.description) : null,
-      h("div", { class: "list" }, (p.program_days || []).sort(function (a, b) { return a.position - b.position; }).map(function (d) {
-        return h("div", { class: "item", onclick: function () { openView({ name: "workout", day: d.id }); } },
-          h("div", null, h("div", null, d.name), h("div", { class: "small muted" }, (d.program_exercises || []).length + " esercizi")), h("span", { class: "btn sm" }, "Inizia"));
-      }))));
+  var tday = romeDay(new Date()), ws = weekStartOf(tday);
+  var D = await cq("home", async function () {
+    var r = await Promise.all([
+      q(sb.from("programs").select("*, program_days(*, program_exercises(id))").eq("client_id", S.me.id).eq("active", true).order("created_at", { ascending: false })),
+      q(sb.from("workout_logs").select("performed_on, day_id").eq("client_id", S.me.id).order("performed_on", { ascending: false }).order("created_at", { ascending: false }).limit(40)),
+      q(sb.from("bookings").select("*").eq("client_id", S.me.id).eq("status", "confermata").gte("starts_at", new Date(Date.now() - 3600e3).toISOString()).order("starts_at").limit(1)),
+      q(sb.from("notifications").select("title, body, created_at").eq("user_id", S.me.id).eq("kind", "messaggio").order("created_at", { ascending: false }).limit(1)),
+      q(sb.from("checkins").select("week_start").eq("client_id", S.me.id).eq("week_start", ws)),
+      q(sb.from("booking_settings").select("whatsapp_number, gym_address").eq("id", 1).single())
+    ]);
+    return { progs: r[0], logs: r[1], next: r[2][0] || null, msg: r[3][0] || null, checkin: r[4].length > 0, st: r[5] };
   });
-  return out;
-};
-VIEWS.workout = async function (v) {
-  var d = await q(sb.from("program_days").select("*, programs(title), program_exercises(*, exercises(*))").eq("id", v.day).single());
-  var exs = (d.program_exercises || []).sort(function (a, b) { return a.position - b.position; });
-  // ultimo carico registrato per ogni esercizio
-  var prev = {};
-  var ids = exs.map(function (e) { return e.exercise_id; });
-  if (ids.length) {
-    var logs = await q(sb.from("workout_logs").select("performed_on, set_logs(exercise_id, set_number, reps, weight_kg)").eq("client_id", S.me.id).order("performed_on", { ascending: false }).order("created_at", { ascending: false }).limit(30));
-    logs.forEach(function (w) {
-      (w.set_logs || []).forEach(function (r) {
-        var k = r.exercise_id; if (ids.indexOf(k) < 0) return;
-        if (!prev[k]) prev[k] = { date: w.performed_on, sets: {} };
-        if (prev[k].date === w.performed_on && !prev[k].sets[r.set_number]) prev[k].sets[r.set_number] = r;
-      });
-    });
+  S.wa = D.st && D.st.whatsapp_number;
+  var nome = firstName(S.me);
+  var weekDays = {}; D.logs.forEach(function (l) { if (l.performed_on >= ws) weekDays[l.performed_on] = true; });
+  var nWeek = Object.keys(weekDays).length;
+  var dots = h("div", { class: "week" }, WD.map(function (w, i) {
+    var d = addDays(ws, i);
+    return h("div", { class: "wday" + (weekDays[d] ? " on" : "") + (d === tday ? " today" : "") }, h("span", null, w), h("i"));
+  }));
+  // allenamento consigliato: il giorno successivo all'ultimo fatto, nella scheda più recente
+  var prog = D.progs[0], days = prog ? (prog.program_days || []).slice().sort(function (a, b) { return a.position - b.position; }) : [];
+  var suggested = null, doneToday = false;
+  if (days.length) {
+    var ids = days.map(function (d) { return d.id; });
+    var lastLog = D.logs.filter(function (l) { return ids.indexOf(l.day_id) > -1; })[0];
+    suggested = lastLog ? days[(ids.indexOf(lastLog.day_id) + 1) % days.length] : days[0];
+    doneToday = !!(lastLog && lastLog.performed_on === tday);
   }
+  var allDays = []; D.progs.forEach(function (p) { (p.program_days || []).forEach(function (d) { allDays.push({ d: d, p: p }); }); });
+  var draftDay = allDays.filter(function (x) { return getDraft(x.d.id); })[0];
+  var pend = (lsGet(outboxKey()) || []).length;
+  var msgRecent = D.msg && Date.now() - new Date(D.msg.created_at).getTime() < 21 * 864e5;
+  return [
+    h("div", { class: "eyebrow" }, new Date().toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" })),
+    h("h1", null, "Ciao" + (nome ? " " + nome : "") + ","),
+    h("p", { class: "muted", style: "margin-top:-8px" }, nWeek ? "Questa settimana: " + nWeek + (nWeek === 1 ? " allenamento." : " allenamenti.") : "Nessun allenamento ancora questa settimana."),
+    dots,
+    pend ? h("div", { class: "tip", style: "margin-bottom:14px" }, pend + (pend === 1 ? " allenamento" : " allenamenti") + " salvati sul telefono: verranno inviati appena torna la connessione.") : null,
+    msgRecent ? h("div", { class: "card freed" }, h("div", { class: "eyebrow" }, D.msg.title), h("p", { style: "margin:0;white-space:pre-wrap" }, D.msg.body), h("div", { class: "small muted", style: "margin-top:6px" }, whenAgo(D.msg.created_at))) : null,
+    draftDay ? h("div", { class: "card freed" }, h("div", { class: "eyebrow" }, "Allenamento in corso"), h("h3", null, draftDay.d.name),
+      h("p", { class: "small muted", style: "margin:0" }, "Le serie che hai segnato sono salvate sul telefono."),
+      h("button", { class: "btn block", onclick: function () { openView({ name: "workout", day: draftDay.d.id }); } }, "Riprendi")) : null,
+    suggested && !draftDay ? h("div", { class: "card" }, h("div", { class: "eyebrow" }, doneToday ? "Il prossimo allenamento" : "Allenamento di oggi"),
+      h("h2", { style: "margin-bottom:2px" }, suggested.name), h("div", { class: "small muted" }, prog.title + " · " + (suggested.program_exercises || []).length + " esercizi"),
+      doneToday ? h("div", { class: "small", style: "margin-top:8px;color:#4F7458" }, "Allenamento di oggi fatto ✓") : null,
+      h("button", { class: "btn block", onclick: function () { openView({ name: "workout", day: suggested.id }); } }, "Inizia")) : null,
+    !prog ? h("div", { class: "card empty" }, "La tua scheda è in preparazione. A presto!") : null,
+    D.next ? h("div", { class: "card tap", onclick: function () { go("lezioni"); } }, h("div", { class: "eyebrow" }, "Prossima lezione"),
+      h("div", { class: "row" }, h("div", null, h("h3", { style: "margin:0" }, slotLabel(D.next.starts_at)), h("div", { class: "small muted" }, MODE[D.next.mode] + (D.next.mode === "online" && D.next.meet_link ? " · link pronto" : ""))), h("span", { class: "muted" }, "›")))
+      : h("div", { class: "card row" }, h("div", null, h("div", { class: "eyebrow", style: "margin:0" }, "Lezioni"), h("div", { class: "small muted" }, "Nessuna lezione prenotata")), h("button", { class: "btn sm", onclick: function () { S.bk = null; S.tab = "lezioni"; openView({ name: "prenota" }); } }, "Prenota")),
+    !D.checkin ? h("div", { class: "card row" }, h("div", null, h("div", { class: "eyebrow", style: "margin:0" }, "Check-in della settimana"), h("div", { class: "small muted" }, "4 domande, meno di un minuto")),
+      h("button", { class: "btn sm", onclick: function () { openView({ name: "checkin" }); } }, "Compila")) : null,
+    allDays.length > 1 ? h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Le tue schede"), h("div", { class: "list" }, allDays.map(function (x) {
+      return h("div", { class: "item", onclick: function () { openView({ name: "workout", day: x.d.id }); } },
+        h("div", null, h("div", null, x.d.name), h("div", { class: "small muted" }, x.p.title + " · " + (x.d.program_exercises || []).length + " esercizi")), h("span", { class: "muted" }, "›"));
+    }))) : null,
+    S.wa ? h("a", { class: "btn ghost block", href: waLink(S.wa, "Ciao Lorena, "), target: "_blank", rel: "noopener" }, "Scrivi a Lorena su WhatsApp") : null
+  ];
+};
+
+/* --- allenamento: salvataggio automatico, ✓ per serie, timer di recupero, offline --- */
+var REST = { t: null, end: 0 };
+function stopRest() { if (REST.t) clearInterval(REST.t); REST.t = null; var b = document.getElementById("restbar"); if (b) b.remove(); }
+function startRest(sec, label) {
+  stopRest();
+  REST.end = Date.now() + sec * 1000;
+  var rt = h("div", { class: "rt" });
+  var bar = h("div", { class: "restbar", id: "restbar" },
+    h("div", null, h("div", { class: "small" }, "Recupero · " + label), rt),
+    h("div", { class: "row", style: "gap:6px" },
+      h("button", { class: "btn ghost sm", onclick: function () { REST.end += 15000; tick(); } }, "+15″"),
+      h("button", { class: "btn sm", onclick: stopRest }, "Salta")));
+  var tick = function () {
+    var left = Math.max(0, Math.round((REST.end - Date.now()) / 1000));
+    rt.textContent = Math.floor(left / 60) + ":" + pad2(left % 60);
+    if (left <= 0 && REST.t) {
+      clearInterval(REST.t); REST.t = null; bar.classList.add("end"); rt.textContent = "Via, prossima serie!";
+      if (navigator.vibrate) navigator.vibrate([250, 120, 250]);
+      setTimeout(function () { if (!REST.t) { var b = document.getElementById("restbar"); if (b === bar) bar.remove(); } }, 5000);
+    }
+  };
+  document.body.appendChild(bar);
+  REST.t = setInterval(tick, 500); tick();
+}
+VIEWS.workout = async function (v) {
+  var X = await cq("day-" + v.day, async function () {
+    var r = await Promise.all([
+      q(sb.from("program_days").select("*, programs(title), program_exercises(*, exercises(*))").eq("id", v.day).single()),
+      q(sb.from("workout_logs").select("performed_on, set_logs(exercise_id, set_number, reps, weight_kg)").eq("client_id", S.me.id).order("performed_on", { ascending: false }).order("created_at", { ascending: false }).limit(80)),
+      q(sb.from("booking_settings").select("whatsapp_number").eq("id", 1).single())
+    ]);
+    return { d: r[0], logs: r[1], wa: r[2].whatsapp_number };
+  });
+  var d = X.d, wa = X.wa || S.wa;
+  var exs = (d.program_exercises || []).slice().sort(function (a, b) { return a.position - b.position; });
+  var ids = exs.map(function (e) { return e.exercise_id; });
+  var prev = {}, best = {};
+  X.logs.forEach(function (w) {
+    (w.set_logs || []).forEach(function (r) {
+      var k = r.exercise_id; if (ids.indexOf(k) < 0) return;
+      if (r.weight_kg !== null && (best[k] === undefined || Number(r.weight_kg) > best[k])) best[k] = Number(r.weight_kg);
+      if (!prev[k]) prev[k] = { date: w.performed_on, sets: {} };
+      if (prev[k].date === w.performed_on && !prev[k].sets[r.set_number]) prev[k].sets[r.set_number] = r;
+    });
+  });
+  var key = draftKey(d.id);
+  var draft = getDraft(d.id) || { v: {}, done: {} };
+  var resumed = Object.keys(draft.v).length > 0 || Object.keys(draft.done).length > 0;
+  var saveDraft = function () { draft.ts = Date.now(); lsSet(key, draft); };
+  var track = function (el) { el.addEventListener("input", function () { draft.v[el.id] = el.value; saveDraft(); }); return el; };
   var form = h("div");
   exs.forEach(function (pe, i) {
     var e = pe.exercises || {}; var n = pe.sets || 3; var pv = prev[pe.exercise_id];
-    var grid = h("div", { class: "sets" }, h("div", { class: "h" }, "Serie"), h("div", { class: "h" }, "Kg"), h("div", { class: "h" }, "Ripetizioni"));
-    for (var s = 1; s <= n; s++) {
-      var ps = pv && pv.sets[s];
-      grid.appendChild(h("div", { class: "setn" }, s));
-      grid.appendChild(h("input", { id: "w_" + i + "_" + s, inputmode: "decimal", placeholder: ps && ps.weight_kg !== null ? n2(ps.weight_kg) : "kg" }));
-      grid.appendChild(h("input", { id: "r_" + i + "_" + s, inputmode: "numeric", placeholder: ps && ps.reps !== null ? String(ps.reps) : (pe.reps || "rip.") }));
-    }
+    var grid = h("div", { class: "sets" }, h("div", { class: "h" }, "Serie"), h("div", { class: "h" }, "Kg"), h("div", { class: "h" }, "Rip."), h("div", { class: "h" }, "Fatto"));
+    for (var s = 1; s <= n; s++) (function (s) {
+      var ps = pv && pv.sets[s], k = i + "_" + s;
+      var w = track(h("input", { id: "w_" + k, inputmode: "decimal", placeholder: ps && ps.weight_kg !== null ? n2(ps.weight_kg) : "kg" }));
+      var r = track(h("input", { id: "r_" + k, inputmode: "numeric", placeholder: ps && ps.reps !== null ? String(ps.reps) : (pe.reps || "rip.") }));
+      var c = h("button", { class: "chk", "aria-label": "Serie fatta", onclick: function () {
+        if (draft.done[k]) { delete draft.done[k]; c.classList.remove("on"); saveDraft(); return; }
+        if (!w.value && w.placeholder !== "kg") w.value = w.placeholder;
+        if (!r.value && /^\d+$/.test(r.placeholder)) r.value = r.placeholder;
+        draft.v[w.id] = w.value; draft.v[r.id] = r.value; draft.done[k] = true; c.classList.add("on"); saveDraft();
+        if (s < n || i < exs.length - 1) startRest(pe.rest_seconds || 90, e.name || "");
+      } }, "✓");
+      if (draft.v[w.id] !== undefined) w.value = draft.v[w.id];
+      if (draft.v[r.id] !== undefined) r.value = draft.v[r.id];
+      if (draft.done[k]) c.classList.add("on");
+      add(grid, [h("div", { class: "setn" }, s), w, r, c]);
+    })(s);
+    var note = track(h("input", { id: "n_" + i, placeholder: "Come è andata? (facoltativo)" }));
+    if (draft.v[note.id] !== undefined) note.value = draft.v[note.id];
     form.appendChild(h("div", { class: "card" },
       h("div", { class: "eyebrow" }, "Esercizio " + (i + 1) + " di " + exs.length),
       h("h3", null, e.name),
       h("div", { class: "small muted" }, [pe.sets ? pe.sets + " serie" : null, pe.reps ? "× " + pe.reps : null, pe.target_load ? "· " + pe.target_load : null, pe.rest_seconds ? "· recupero " + pe.rest_seconds + "″" : null].filter(Boolean).join(" ")),
       pe.notes ? h("div", { class: "tip" }, h("strong", null, "Lorena: "), pe.notes) : null,
       e.tips ? h("details", { style: "margin-top:8px" }, h("summary", { class: "small", style: "cursor:pointer;color:var(--rose-d)" }, "Consigli di esecuzione"), h("p", { class: "small" }, e.tips), e.description ? h("p", { class: "small muted" }, e.description) : null) : null,
-      videoEmbed(e.video_url),
-      pv ? h("div", { class: "small muted", style: "margin-top:10px" }, "In grigio i valori dell'ultima volta (" + fmtDate(pv.date) + ")") : null,
+      navigator.onLine ? videoEmbed(e.video_url) : (e.video_url ? h("div", { class: "small muted" }, "Il video si vede quando torna la connessione.") : null),
+      pv ? h("div", { class: "small muted", style: "margin-top:10px" }, "In grigio i valori dell'ultima volta (" + fmtDate(pv.date) + "): tocca ✓ per confermarli.") : null,
+      best[pe.exercise_id] !== undefined ? h("div", { class: "small muted" }, "Il tuo record: " + n2(best[pe.exercise_id]) + " kg") : null,
       grid,
-      h("label", { for: "n_" + i }, "Note"), h("input", { id: "n_" + i, placeholder: "Come è andata? (facoltativo)" })));
+      h("label", { for: "n_" + i }, "Note"), note,
+      wa ? h("a", { class: "small", style: "display:inline-block;margin-top:10px", href: waLink(wa, "Ciao Lorena, ho un dubbio sull'esercizio " + (e.name || "") + ": "), target: "_blank", rel: "noopener" }, "Hai un dubbio? Scrivi a Lorena") : null));
   });
+  var wn = track(h("textarea", { id: "wn", placeholder: "Sensazioni, energia, dolori…" }));
+  if (draft.v.wn !== undefined) wn.value = draft.v.wn;
   return [
-    h("button", { class: "back", onclick: function () { go("allenamento"); } }, "‹ Indietro"),
+    h("button", { class: "back", onclick: function () { stopRest(); go("allenamento"); } }, "‹ Indietro"),
     h("div", { class: "eyebrow" }, d.programs ? d.programs.title : ""),
     h("h1", null, d.name),
+    resumed ? h("div", { class: "tip", style: "margin-bottom:14px" }, "Allenamento ripreso da dove l'avevi lasciato.") : null,
     d.notes ? h("div", { class: "tip", style: "margin-bottom:14px" }, d.notes) : null,
     exs.length ? form : h("div", { class: "card empty" }, "Nessun esercizio in questo giorno."),
-    exs.length ? h("div", { class: "card" }, h("label", { for: "wn" }, "Note sull'allenamento"), h("textarea", { id: "wn", placeholder: "Sensazioni, energia, dolori…" }),
+    exs.length ? h("div", { class: "card" }, h("label", { for: "wn" }, "Note sull'allenamento"), wn,
       h("button", { class: "btn block", onclick: async function (ev) {
         ev.target.disabled = true;
-        try { if (await saveWorkout(d, exs) === false) ev.target.disabled = false; } catch (e) { fail(e); ev.target.disabled = false; }
-      } }, "Salva allenamento")) : null
+        try { if (await saveWorkout(d, exs, { key: key, best: best }) === false) ev.target.disabled = false; } catch (e) { fail(e); ev.target.disabled = false; }
+      } }, "Salva allenamento"),
+      resumed ? h("button", { class: "link small", style: "margin-top:12px", onclick: function () {
+        confirmDo("Cancellare le serie segnate e ricominciare da zero?", function () { lsDel(key); render(); }, "Ricomincia");
+      } }, "Ricomincia da zero") : null) : null
   ];
 };
-async function saveWorkout(d, exs) {
+function outboxKey() { return "lr-outbox-" + (S.me ? S.me.id : "x"); }
+async function sendWorkout(p) {
+  var w = await q(sb.from("workout_logs").insert(p.log).select().single());
+  if (p.sets.length) {
+    try { await q(sb.from("set_logs").insert(p.sets.map(function (x) { return Object.assign({}, x, { workout_log_id: w.id }); }))); }
+    catch (e) { await sb.from("workout_logs").delete().eq("id", w.id); throw e; }
+  }
+}
+async function flushOutbox() {
+  if (!S.me || S.flushing) return;
+  var box = lsGet(outboxKey()) || []; if (!box.length) return;
+  S.flushing = true; var sent = 0;
+  try {
+    while (box.length) { await sendWorkout(box[0]); box.shift(); lsSet(outboxKey(), box); sent++; }
+  } catch (e) { /* riprova più tardi */ }
+  S.flushing = false;
+  if (sent) toast(sent === 1 ? "Allenamento salvato offline inviato ✓" : sent + " allenamenti salvati offline inviati ✓");
+}
+async function saveWorkout(d, exs, ctx) {
   var sets = [];
   exs.forEach(function (pe, i) {
     var note = val("n_" + i);
@@ -761,16 +1012,184 @@ async function saveWorkout(d, exs) {
     if (note && !sets.some(function (x) { return x.program_exercise_id === pe.id; })) sets.push({ program_exercise_id: pe.id, exercise_id: pe.exercise_id, set_number: 1, notes: note });
   });
   if (!sets.length && !val("wn")) { toast("Inserisci almeno una serie"); return false; }
-  var w = await q(sb.from("workout_logs").insert({ client_id: S.me.id, day_id: d.id, performed_on: today(), notes: val("wn") }).select().single());
-  if (sets.length) await q(sb.from("set_logs").insert(sets.map(function (x) { x.workout_log_id = w.id; return x; })));
-  toast("Allenamento salvato. Ottimo lavoro!"); go(S.me.role === "admin" ? "clienti" : "progressi");
+  var payload = { log: { client_id: S.me.id, day_id: d.id, performed_on: today(), notes: val("wn") }, sets: sets };
+  var prs = [];
+  exs.forEach(function (pe) {
+    var mx = null; sets.forEach(function (x) { if (x.exercise_id === pe.exercise_id && x.weight_kg !== null && (mx === null || x.weight_kg > mx)) mx = x.weight_kg; });
+    var old = ctx.best[pe.exercise_id];
+    if (mx !== null && old !== undefined && mx > old && !prs.some(function (p) { return p.id === pe.exercise_id; })) prs.push({ id: pe.exercise_id, name: (pe.exercises || {}).name, now: mx, old: old });
+  });
+  var offline = false;
+  try { await sendWorkout(payload); }
+  catch (e) {
+    if (!isNetErr(e)) throw e;
+    var box = lsGet(outboxKey()) || []; box.push(payload); lsSet(outboxKey(), box); offline = true;
+  }
+  lsDel(ctx.key); stopRest();
+  if (offline || !prs.length) toast(offline ? "Sei offline: allenamento salvato sul telefono, lo inviamo appena torna la connessione" : "Allenamento salvato. Ottimo lavoro!");
+  S.progSub = "diario"; go(S.me.role === "admin" ? "clienti" : "progressi");
+  if (prs.length) modal(prs.length === 1 ? "Nuovo record personale!" : "Nuovi record personali!", [
+    h("p", { class: "muted", style: "margin-top:0" }, "Oggi hai superato il tuo massimo:"),
+    h("div", { class: "list" }, prs.map(function (p) {
+      return h("div", { class: "item", style: "cursor:default" }, h("div", null, p.name), h("div", { class: "pr-big" }, n2(p.now) + " kg", h("small", null, "prima " + n2(p.old) + " kg")));
+    })),
+    h("p", { class: "small muted" }, "Lo trovi in Progressi → Carichi.")
+  ]);
 }
+
+/* --- check-in settimanale --- */
+VIEWS.checkin = async function () {
+  var ws = weekStartOf(romeDay(new Date()));
+  var cur = await q(sb.from("checkins").select("*").eq("client_id", S.me.id).eq("week_start", ws).maybeSingle());
+  var vals = { energy: cur ? cur.energy : null, sleep: cur ? cur.sleep : null, soreness: cur ? cur.soreness : null, rating: cur ? cur.rating : null };
+  var scale = function (k, label, n, lo, hi) {
+    var row = h("div", { class: "scale" + (n > 5 ? " ten" : "") });
+    var draw = function () { row.innerHTML = ""; for (var i = 1; i <= n; i++) (function (i) { row.appendChild(h("button", { class: vals[k] === i ? "on" : "", onclick: function () { vals[k] = i; draw(); } }, String(i))); })(i); };
+    draw();
+    return h("div", { class: "card" }, h("h3", null, label), row, h("div", { class: "row small muted", style: "margin-top:6px" }, h("span", null, lo), h("span", null, hi)));
+  };
+  return [
+    h("button", { class: "back", onclick: function () { go("allenamento"); } }, "‹ Indietro"),
+    h("div", { class: "eyebrow" }, "Settimana del " + fmtDate(ws)),
+    h("h1", null, "Check-in"),
+    h("p", { class: "muted", style: "margin-top:-8px" }, "Serve a Lorena per adattare il tuo percorso. Rispondi d'istinto."),
+    scale("energy", "Com'è stata la tua energia?", 5, "molto bassa", "ottima"),
+    scale("sleep", "Come hai dormito?", 5, "male", "benissimo"),
+    scale("soreness", "Dolori o fastidi?", 5, "nessuno", "forti"),
+    scale("rating", "Che voto dai alla tua settimana?", 10, "pessima", "perfetta"),
+    h("div", { class: "card" }, h("label", { for: "ck_n" }, "Vuoi dire qualcosa a Lorena? (facoltativo)"), h("textarea", { id: "ck_n", value: cur && cur.notes ? cur.notes : "", placeholder: "Es. fastidio al ginocchio negli affondi, settimana stressante al lavoro…" }),
+      h("button", { class: "btn block", onclick: async function (e) {
+        if (!vals.energy || !vals.sleep || !vals.soreness || !vals.rating) return toast("Rispondi a tutte e 4 le domande");
+        e.target.disabled = true;
+        try {
+          await q(sb.from("checkins").upsert({ client_id: S.me.id, week_start: ws, energy: vals.energy, sleep: vals.sleep, soreness: vals.soreness, rating: vals.rating, notes: val("ck_n") }, { onConflict: "client_id,week_start" }));
+          toast("Grazie! Lorena lo vedrà"); go("allenamento");
+        } catch (er) { fail(er); e.target.disabled = false; }
+      } }, cur ? "Aggiorna check-in" : "Invia check-in"),
+      h("button", { class: "link small", style: "margin-top:12px", onclick: function () { S.progSub = "foto"; go("progressi"); } }, "Aggiungi anche le foto dei progressi"))
+  ];
+};
+async function checkinsView(clientId) {
+  var cs = await q(sb.from("checkins").select("*").eq("client_id", clientId).order("week_start", { ascending: false }).limit(26));
+  if (!cs.length) return h("div", { class: "card empty" }, "Nessun check-in ancora.");
+  var pts = cs.slice().reverse().map(function (c) { return { x: c.week_start, y: c.rating }; });
+  return [
+    pts.length > 1 ? h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Voto alla settimana"), lineChart(pts, "/10")) : null,
+    cs.map(function (c) {
+      var warn = c.rating <= 5 || c.soreness >= 4 || c.energy <= 2 || c.sleep <= 2;
+      return h("div", { class: "card" + (warn ? " freed" : "") },
+        h("div", { class: "row" }, h("h3", { style: "margin:0" }, "Settimana del " + fmtDate(c.week_start)), h("span", { class: "pill" + (warn ? " warn" : " ok") }, c.rating + "/10")),
+        h("div", { class: "chips" }, h("span", { class: "pill" }, "energia " + c.energy + "/5"), h("span", { class: "pill" }, "sonno " + c.sleep + "/5"), h("span", { class: "pill" + (c.soreness >= 4 ? " warn" : "") }, "fastidi " + c.soreness + "/5")),
+        c.notes ? h("div", { class: "tip" }, c.notes) : null);
+    })
+  ];
+}
+
+/* --- carichi e record per esercizio --- */
+async function loadsView(clientId) {
+  var logs = await cq("loads-" + clientId, function () {
+    return q(sb.from("workout_logs").select("performed_on, set_logs(exercise_id, reps, weight_kg, exercises(name, muscle_group))").eq("client_id", clientId).order("performed_on"));
+  });
+  var ex = {};
+  logs.forEach(function (w) {
+    (w.set_logs || []).forEach(function (s) {
+      if (s.weight_kg === null || !s.exercise_id) return;
+      var e = ex[s.exercise_id] = ex[s.exercise_id] || { name: s.exercises ? s.exercises.name : "Esercizio", byDate: {}, best: null };
+      var wv = Number(s.weight_kg);
+      e.byDate[w.performed_on] = Math.max(e.byDate[w.performed_on] || 0, wv);
+      if (!e.best || wv > e.best.w || (wv === e.best.w && (s.reps || 0) > (e.best.r || 0))) e.best = { w: wv, r: s.reps, d: w.performed_on };
+    });
+  });
+  var list = Object.keys(ex).map(function (k) { return ex[k]; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+  if (!list.length) return h("div", { class: "card empty" }, "Qui vedrai i tuoi carichi e i tuoi record appena registri il primo allenamento con i pesi.");
+  return [h("p", { class: "small muted", style: "margin-top:0" }, "Tocca un esercizio per vedere come sono cresciuti i carichi."),
+    h("div", { class: "card list" }, list.map(function (e) {
+      var dates = Object.keys(e.byDate).sort();
+      var first = e.byDate[dates[0]], last = e.byDate[dates[dates.length - 1]];
+      return h("details", { class: "item ex-item" },
+        h("summary", null, h("div", null, h("div", null, e.name), h("div", { class: "small muted" }, "Record " + n2(e.best.w) + " kg" + (e.best.r ? " × " + e.best.r : "") + " · " + fmtDate(e.best.d))),
+          dates.length > 1 && last > first ? h("span", { class: "pill ok" }, "+" + n2(Math.round((last - first) * 10) / 10) + " kg") : h("span", { class: "muted" }, "›")),
+        dates.length > 1 ? lineChart(dates.map(function (d) { return { x: d, y: e.byDate[d] }; }), "kg") : h("p", { class: "small muted" }, "Il grafico compare dalla seconda volta che fai questo esercizio."));
+    }))];
+}
+
+/* --- foto dei progressi --- */
+var POSES = [["fronte", "Fronte"], ["lato", "Lato"], ["retro", "Retro"]];
+async function compressImage(file) {
+  var img;
+  try { img = await createImageBitmap(file); }
+  catch (e) { img = await new Promise(function (ok, ko) { var i = new Image(); i.onload = function () { ok(i); }; i.onerror = ko; i.src = URL.createObjectURL(file); }); }
+  var max = 1400, sc = Math.min(1, max / Math.max(img.width, img.height));
+  var c = document.createElement("canvas"); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise(function (ok) { c.toBlob(ok, "image/jpeg", 0.82); });
+}
+async function photosView(clientId, isAdmin, reload) {
+  var ps = await q(sb.from("progress_photos").select("*").eq("client_id", clientId).order("taken_on", { ascending: false }).order("created_at", { ascending: false }));
+  var urls = {};
+  if (ps.length) { var r = await sb.storage.from("photos").createSignedUrls(ps.map(function (p) { return p.path; }), 3600); (r.data || []).forEach(function (x, i) { if (x && x.signedUrl) urls[ps[i].path] = x.signedUrl; }); }
+  var byDate = {}; ps.forEach(function (p) { var d = byDate[p.taken_on] = byDate[p.taken_on] || {}; if (!d[p.pose]) d[p.pose] = p; });
+  var dates = Object.keys(byDate).sort();
+  var img = function (p, cap) {
+    return p && urls[p.path] ? h("figure", { class: "ph", onclick: function () { photoZoom(p, urls[p.path], reload); } }, h("img", { src: urls[p.path], loading: "lazy", alt: cap || p.pose }), cap ? h("figcaption", null, cap) : null) : h("figure", { class: "ph empty" }, h("span", null, "—"), cap ? h("figcaption", null, cap) : null);
+  };
+  var out = [];
+  if (!isAdmin) out.push(h("button", { class: "btn block", style: "margin:0 0 14px", onclick: function () { addPhotos(reload); } }, "+ Aggiungi foto"));
+  if (!ps.length) { out.push(h("div", { class: "card empty" }, isAdmin ? "Nessuna foto caricata." : "Scatta le prime foto oggi: fra qualche settimana il confronto ti sorprenderà. Le vedete solo tu e Lorena.")); return out; }
+  if (dates.length > 1) {
+    var a = byDate[dates[0]], b = byDate[dates[dates.length - 1]];
+    var rows = POSES.filter(function (p) { return a[p[0]] && b[p[0]]; });
+    if (rows.length) out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Prima e dopo"),
+      rows.map(function (p) { return h("div", null, h("div", { class: "small muted", style: "margin:8px 0 4px" }, p[1]), h("div", { class: "ph2" }, img(a[p[0]], fmtDate(dates[0])), img(b[p[0]], fmtDate(dates[dates.length - 1])))); })));
+  }
+  dates.slice().reverse().forEach(function (d) {
+    out.push(h("div", { class: "card" }, h("div", { class: "eyebrow" }, fmtDate(d)), h("div", { class: "ph3" }, POSES.map(function (p) { return img(byDate[d][p[0]], p[1]); }))));
+  });
+  out.push(h("p", { class: "small muted" }, "Le foto sono private: le vedete solo " + (isAdmin ? "tu e la cliente." : "tu e Lorena.")));
+  return out;
+}
+function photoZoom(p, url, reload) {
+  var m = modal(fmtDate(p.taken_on) + " · " + p.pose, [
+    h("img", { src: url, style: "width:100%;border-radius:14px;display:block" }),
+    h("button", { class: "btn danger sm", style: "margin-top:14px", onclick: function () {
+      confirmDo("Eliminare questa foto?", async function () {
+        try { await sb.storage.from("photos").remove([p.path]); await q(sb.from("progress_photos").delete().eq("id", p.id)); m.remove(); reload(); } catch (e) { fail(e); }
+      });
+    } }, "Elimina foto")
+  ]);
+}
+function addPhotos(reload) {
+  modal("Foto dei progressi", [
+    h("p", { class: "small muted", style: "margin-top:0" }, "Consiglio: stessa luce, stessa posizione e stesso abbigliamento ogni volta. Il confronto sarà molto più utile."),
+    field("Data", "ph_d", "date", today()),
+    POSES.map(function (p) { return h("div", null, h("label", { for: "ph_" + p[0] }, p[1]), h("input", { id: "ph_" + p[0], type: "file", accept: "image/*" })); })
+  ], async function () {
+    var d = val("ph_d") || today(), n = 0;
+    var b = $(".modal .btn.block:not(.ghost)");
+    for (var i = 0; i < POSES.length; i++) {
+      var f = pickedFile("ph_" + POSES[i][0]); if (!f) continue;
+      if (b) b.textContent = "Caricamento " + (n + 1) + "…";
+      var blob = await compressImage(f);
+      var path = S.me.id + "/" + Date.now() + "-" + POSES[i][0] + ".jpg";
+      await q(sb.storage.from("photos").upload(path, blob, { contentType: "image/jpeg" }));
+      await q(sb.from("progress_photos").insert({ client_id: S.me.id, taken_on: d, pose: POSES[i][0], path: path }));
+      n++;
+    }
+    if (!n) { toast("Scegli almeno una foto"); return false; }
+    toast(n === 1 ? "Foto salvata" : n + " foto salvate"); reload();
+  }, "Salva foto");
+}
+
+/* --- progressi --- */
 VIEWS.progressi = async function () {
   var sub = S.progSub || "diario";
-  var subs = [["diario", "Diario"], ["misure", "Misure"], ["abbonamento", "Abbonamento"]];
+  var subs = [["diario", "Diario"], ["carichi", "Carichi"], ["misure", "Misure"], ["foto", "Foto"], ["checkin", "Check-in"], ["abbonamento", "Abbonamento"]];
   var content;
   if (sub === "diario") content = await workoutHistory(S.me.id);
+  else if (sub === "carichi") content = await loadsView(S.me.id);
   else if (sub === "misure") content = await measuresView(S.me.id, null);
+  else if (sub === "foto") content = await photosView(S.me.id, false, function () { render(); });
+  else if (sub === "checkin") content = [h("button", { class: "btn ghost block", style: "margin:0 0 14px", onclick: function () { openView({ name: "checkin" }); } }, "Compila il check-in di questa settimana"), await checkinsView(S.me.id)];
   else content = [await subsView(S.me.id, null), h("h2", { style: "margin-top:16px" }, "Pagamenti"), await paysView(S.me.id, null)];
   return [h("h1", null, "Progressi"),
     h("div", { class: "subnav" }, subs.map(function (s) { return h("button", { class: sub === s[0] ? "on" : "", onclick: function () { S.progSub = s[0]; render(); } }, s[1]); })),
@@ -924,7 +1343,7 @@ VIEWS.lezioni = async function () {
       return h("div", { class: "item", style: "cursor:default" },
         h("div", null, h("div", null, slotLabel(x.starts_at)), h("div", { class: "small muted" }, MODE[x.mode] + (x.notified_at ? " · posto libero!" : " · ti avvisiamo se si libera"))),
         h("button", { class: "link small", onclick: async function () {
-          try { await q(sb.rpc("leave_queue", { p_starts_at: x.starts_at })); toast("Sei uscita dalla coda"); render(); } catch (e) { fail(e); }
+          try { await q(sb.rpc("leave_queue", { p_starts_at: x.starts_at })); toast("Hai lasciato la coda"); render(); } catch (e) { fail(e); }
         } }, "Esci"));
     }))] : null,
     past.length ? [h("h2", null, "Ultime lezioni"), h("div", { class: "card list" }, past.map(function (b) {
@@ -1017,7 +1436,7 @@ VIEWS.prenota = async function () {
       if (s.state === "occupato") return h("div", { class: "slot full" }, h("span", { class: "t" }, t), h("small", null, "occupato"),
         h("button", { class: "q", onclick: async function () {
           try {
-            if (s.in_queue) { await q(sb.rpc("leave_queue", { p_starts_at: s.starts_at })); s.in_queue = false; toast("Sei uscita dalla coda"); }
+            if (s.in_queue) { await q(sb.rpc("leave_queue", { p_starts_at: s.starts_at })); s.in_queue = false; toast("Hai lasciato la coda"); }
             else { await q(sb.rpc("join_queue", { p_starts_at: s.starts_at, p_mode: bk.mode })); s.in_queue = true; toast("Sei in coda: ti avvisiamo se si libera"); }
             draw();
           } catch (e) { fail(e); }
@@ -1253,9 +1672,12 @@ AG.impostazioni = async function () {
     h("p", { class: "small muted" }, "Il prezzo vale per chi non ha un abbonamento: alla prenotazione viene creato il pagamento da incassare (lo trovi in Scadenze)."),
     field("Lezioni prenotabili alla volta per cliente", "bs_max", "number", st.max_active_bookings, { inputmode: "numeric" }),
     field("Indirizzo della palestra (lo vede la cliente)", "bs_addr", "text", st.gym_address),
+    field("Numero WhatsApp di Lorena (per il tasto “Scrivi a Lorena”)", "bs_wa", "tel", st.whatsapp_number, { placeholder: "es. 333 1234567" }),
+    field("Informativa privacy (la cliente la accetta al primo accesso)", "bs_pv", "textarea", st.privacy_text, { style: "min-height:240px" }),
+    h("p", { class: "small muted" }, "Il testo attuale è una bozza: fallo verificare a un consulente privacy e completalo con i dati del titolare."),
     h("button", { class: "btn block", onclick: async function () {
       try {
-        await q(sb.from("booking_settings").update({ price_presenza_eur: num("bs_pp"), price_online_eur: num("bs_po"), max_active_bookings: num("bs_max") || 3, gym_address: val("bs_addr"), updated_at: new Date().toISOString() }).eq("id", 1));
+        await q(sb.from("booking_settings").update({ price_presenza_eur: num("bs_pp"), price_online_eur: num("bs_po"), max_active_bookings: num("bs_max") || 3, gym_address: val("bs_addr"), whatsapp_number: val("bs_wa"), privacy_text: val("bs_pv"), updated_at: new Date().toISOString() }).eq("id", 1));
         toast("Impostazioni salvate");
       } catch (e) { fail(e); }
     } }, "Salva"));
@@ -1282,6 +1704,7 @@ VIEWS.profilo = async function () {
         $("#pf_1").value = $("#pf_2").value = ""; toast("Password aggiornata");
       } }, "Aggiorna password")),
     pushCard(true),
+    h("button", { class: "link small", style: "margin:0 0 14px", onclick: showPrivacyText }, "Informativa privacy"),
     h("div", { class: "card install small" },
       h("h3", null, "Installa l'app sul telefono"),
       h("p", null, h("strong", null, "iPhone: "), "apri questa pagina in Safari, tocca Condividi e poi “Aggiungi alla schermata Home”."),
@@ -1300,5 +1723,6 @@ if ("serviceWorker" in navigator) {
     if (e.data.type === "open") openView({ name: "notifiche" });
   });
 }
-document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible" && S.me) updateBell(); });
+document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible" && S.me) { updateBell(); flushOutbox(); } });
+window.addEventListener("online", function () { if (S.me) flushOutbox(); });
 boot();
