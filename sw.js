@@ -1,5 +1,5 @@
 /* Service worker: rete prima, cache come riserva per i file dell'app */
-var CACHE = "lr-v6";
+var CACHE = "lr-v7";
 var SHELL = ["./", "index.html", "style.css?v=6", "app.js?v=6", "manifest.webmanifest", "icon-192.png"];
 self.addEventListener("install", function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); })); self.skipWaiting(); });
 self.addEventListener("activate", function (e) {

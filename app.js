@@ -642,8 +642,8 @@ async function subsView(clientId, adminClient) {
   return h("div", { class: "card list" }, ss.map(function (s) {
     var expired = s.end_date && s.end_date < today();
     return h("div", { class: "item", onclick: adminClient ? function () { editSub(adminClient, s); } : null },
-      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, fmtDate(s.start_date) + " → " + fmtDate(s.end_date) + " · " + euro(s.price_eur) + (s.lessons_included ? " · " + s.lessons_included + " lezioni" : "") + (s.bought_in_app ? " · acquistato dall'app" : ""))),
-      h("span", { class: "pill " + (expired ? "off" : "ok") }, expired ? "scaduto" : "attivo"));
+      h("div", null, h("div", null, s.plan_name), h("div", { class: "small muted" }, (s.pending ? "acquistato il " + fmtDate(String(s.created_at).slice(0, 10)) : fmtDate(s.start_date) + " → " + fmtDate(s.end_date)) + " · " + euro(s.price_eur) + (s.lessons_included ? " · " + s.lessons_included + " lezioni" : "") + (s.bought_in_app ? " · acquistato dall'app" : ""))),
+      s.pending ? h("span", { class: "pill warn" }, "in attesa di pagamento") : h("span", { class: "pill " + (expired ? "off" : "ok") }, expired ? "scaduto" : "attivo"));
   }));
 }
 async function paysView(clientId, adminClient) {
@@ -802,8 +802,8 @@ function editExercise(e) {
 VIEWS.scadenze = async function () {
   var t = today();
   var in30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
-  var pays = await q(sb.from("payments").select("*, profiles(full_name, username)").eq("status", "da_pagare").order("due_date"));
-  var subs = await q(sb.from("subscriptions").select("*, profiles(full_name, username)").gte("end_date", t).lte("end_date", in30).order("end_date"));
+  var pays = await q(sb.from("payments").select("*, profiles(full_name, username), subscriptions(plan_name, pending)").eq("status", "da_pagare").order("due_date"));
+  var subs = await q(sb.from("subscriptions").select("*, profiles(full_name, username)").eq("pending", false).gte("end_date", t).lte("end_date", in30).order("end_date"));
   var name = function (x) { return x.profiles ? (x.profiles.full_name || x.profiles.username) : ""; };
   var tot = pays.reduce(function (s, p) { return s + Number(p.amount_eur || 0); }, 0);
   return [
@@ -813,9 +813,17 @@ VIEWS.scadenze = async function () {
     h("h2", null, "Pagamenti aperti"),
     pays.length ? h("div", { class: "card list" }, pays.map(function (p) {
       var late = p.due_date && p.due_date < t;
+      var pk = p.subscriptions && p.subscriptions.pending;
       return h("div", { class: "item", onclick: function () { openView({ name: "cliente", id: p.client_id, sub: "pagamenti" }); } },
-        h("div", null, h("div", null, name(p)), h("div", { class: "small muted" }, euro(p.amount_eur) + " · scad. " + fmtDate(p.due_date))),
-        h("span", { class: "pill " + (late ? "warn" : "") }, late ? "in ritardo" : "da pagare"));
+        h("div", null, h("div", null, name(p)), h("div", { class: "small muted" }, euro(p.amount_eur) + " · " + (p.method ? p.method.toLowerCase() + " · " : "") + "scad. " + fmtDate(p.due_date)),
+          p.subscriptions ? h("div", { class: "small" }, p.subscriptions.plan_name + (pk ? " · si attiva al pagamento" : "")) : (p.notes ? h("div", { class: "small muted" }, p.notes) : null),
+          late ? h("span", { class: "pill warn", style: "margin-top:4px" }, "in ritardo") : null),
+        h("button", { class: "btn sm", onclick: function (e) {
+          e.stopPropagation();
+          confirmDo("Confermi di aver ricevuto " + euro(p.amount_eur) + " da " + name(p) + "?" + (pk ? " Il pacchetto «" + p.subscriptions.plan_name + "» verrà attivato." : ""), async function () {
+            try { await q(sb.from("payments").update({ status: "pagato", paid_on: today() }).eq("id", p.id)); toast(pk ? "Pagamento registrato, pacchetto attivato" : "Pagamento registrato"); render(); } catch (er) { fail(er); }
+          }, "Ricevuto");
+        } }, "Ricevuto"));
     })) : h("div", { class: "card empty" }, "Nessun pagamento in sospeso."),
     h("h2", null, "Abbonamenti in scadenza (30 giorni)"),
     subs.length ? h("div", { class: "card list" }, subs.map(function (s) {
@@ -1277,7 +1285,7 @@ VIEWS.notifiche = async function () {
 };
 async function openNotif(n) {
   if (S.me.role === "admin" && n.kind === "acquisto") return go("scadenze");
-  if (S.me.role !== "admin" && n.kind === "rinnovo") return go("abbonamenti");
+  if (S.me.role !== "admin" && (n.kind === "rinnovo" || n.kind === "pacchetto_attivo")) return go("abbonamenti");
   if (S.me.role === "admin") { S.agSub = "agenda"; if (n.booking_at) S.agWeek = weekStartOf(romeDay(n.booking_at)); return go("agenda"); }
   if (n.kind === "posto_libero" && n.booking_at && new Date(n.booking_at) > new Date()) {
     var qe = await sb.from("booking_queue").select("mode").eq("client_id", S.me.id).eq("starts_at", n.booking_at).maybeSingle();
@@ -1356,7 +1364,7 @@ VIEWS.lezioni = async function () {
       var tday = romeDay(new Date()), left = 0, unl = false;
       (ctx.subscriptions || []).forEach(function (x) { if (x.start_date <= tday && (!x.end_date || x.end_date >= tday)) { if (x.lessons_included === null) unl = true; else left += Math.max(0, x.lessons_included - x.used); } });
       return h("div", { class: "card row small", style: "margin-bottom:14px" },
-        h("div", null, unl ? "Lezioni illimitate nel tuo abbonamento" : left ? "Lezioni disponibili nei tuoi pacchetti: " + left : "Nessun pacchetto di lezioni attivo: le lezioni si pagano singolarmente."),
+        h("div", null, unl ? "Lezioni illimitate nel tuo abbonamento" : left ? "Lezioni disponibili nei tuoi pacchetti: " + left : ctx.pending ? "Pacchetto in attesa di pagamento: si attiva quando Lorena riceve il pagamento." : "Nessun pacchetto di lezioni attivo: le lezioni si pagano singolarmente."),
         h("button", { class: "link small", onclick: function () { go("abbonamenti"); } }, left || unl ? "Dettagli" : "Vedi pacchetti"));
     })(),
     full ? h("p", { class: "small muted", style: "margin-top:-6px" }, "Hai già " + ctx.active_count + " lezioni prenotate, il massimo consentito. Potrai prenotarne un'altra dopo la prossima lezione.") : null,
@@ -1486,7 +1494,8 @@ VIEWS.prenota = async function () {
           return h("button", { class: "opt" + (bk.pay === p[0] ? " on" : ""), onclick: function () { bk.pay = p[0]; draw(); } }, h("strong", null, p[1]), h("span", null, p[2]));
         })),
         price(bk.mode) ? h("div", { class: "small muted", style: "margin-top:10px" }, "Importo: " + price(bk.mode)) : null,
-        bk.pay === "carta" ? h("div", { class: "tip" }, CARD_MSG) : null];
+        bk.pay === "carta" ? h("div", { class: "tip" }, CARD_MSG) : null,
+        ctx.pending ? h("div", { class: "tip" }, "Hai un pacchetto in attesa di pagamento: quando Lorena lo riceve, questa lezione verrà scalata dal pacchetto e non dovrai pagarla a parte.") : null];
     }
     out.push(h("div", { class: "card", id: "bk_pay" }, h("div", { class: "eyebrow" }, "4 · Pagamento"), payBox));
     out.push(h("div", { class: "card summary" },
@@ -1732,7 +1741,7 @@ function ibanBox(st, amount, causale) {
     h("div", { class: "kv" }, h("span", null, "IBAN"), h("b", { style: "word-break:break-all" }, st.iban || "—"), st.iban ? copyBtn(st.iban.replace(/\s/g, ""), "IBAN") : null),
     amount !== null ? h("div", { class: "kv" }, h("span", null, "Importo"), h("b", null, euro(amount))) : null,
     causale ? h("div", { class: "kv" }, h("span", null, "Causale"), h("b", null, causale), copyBtn(causale, "Causale")) : null,
-    h("p", { class: "muted", style: "margin:8px 0 0" }, "Fai il bonifico entro 3 giorni. Il pacchetto è già attivo: puoi prenotare subito."));
+    h("p", { class: "muted", style: "margin:8px 0 0" }, "Fai il bonifico entro 3 giorni. Il pacchetto si attiva appena Lorena riceve il pagamento."));
 }
 VIEWS.abbonamenti = async function () {
   var r = await Promise.all([
@@ -1745,7 +1754,10 @@ VIEWS.abbonamenti = async function () {
   var plans = r[0], subs = r[1], pend = r[2], st = r[3], used = {};
   r[4].forEach(function (b) { used[b.subscription_id] = (used[b.subscription_id] || 0) + 1; });
   var tday = today();
-  var active = subs.filter(function (s) { return !s.end_date || s.end_date >= tday; });
+  var active = subs.filter(function (s) {
+    if (s.pending) return pend.some(function (p) { return p.subscription_id === s.id; });
+    return !s.end_date || s.end_date >= tday;
+  });
   var single = st.price_presenza_eur;
   return [
     h("h1", null, "Abbonamenti"),
@@ -1753,6 +1765,15 @@ VIEWS.abbonamenti = async function () {
       var tot = s.lessons_included, u = used[s.id] || 0, left = tot === null ? null : Math.max(0, tot - u);
       var future = s.start_date > tday;
       var pay = pend.filter(function (p) { return p.subscription_id === s.id; })[0];
+      if (s.pending) return h("div", { class: "card" },
+        h("div", { class: "row" }, h("h3", { style: "margin:0" }, s.plan_name), h("span", { class: "pill warn" }, "in attesa di pagamento")),
+        h("p", { class: "small", style: "margin:8px 0 0" }, "Si attiva quando Lorena riceve il pagamento" + (s.end_date ? ": la validità parte da quel giorno." : ".")
+          + (tot ? " Le lezioni che prenoti nel frattempo verranno scalate dal pacchetto." : "")),
+        pay ? h("div", { class: "tip" }, "Da pagare: " + euro(pay.amount_eur) + " · " + (pay.method === "Bonifico" ? "bonifico entro il " + fmtDate(pay.due_date) : "contanti a Lorena alla prossima lezione"),
+          pay.method === "Bonifico" ? h("button", { class: "link small", style: "display:block;margin-top:6px", onclick: function () {
+            modal("Dati per il bonifico", ibanBox(st, pay.amount_eur, (S.me.full_name || S.me.username) + " - " + s.plan_name));
+          } }, "Vedi i dati per il bonifico") : null) : null,
+        tot && pay && pay.method !== "Bonifico" ? h("button", { class: "btn ghost block", onclick: function () { S.bk = null; S.tab = "lezioni"; openView({ name: "prenota" }); } }, "Prenota la prima lezione") : null);
       return h("div", { class: "card" },
         h("div", { class: "row" }, h("h3", { style: "margin:0" }, s.plan_name), h("span", { class: "pill " + (future ? "off" : "ok") }, future ? "dal " + fmtDate(s.start_date) : "attivo")),
         tot ? h("div", { style: "margin-top:10px" }, h("div", { class: "row small" }, h("span", null, "Lezioni rimaste"), h("b", null, left + " di " + tot)),
@@ -1796,26 +1817,26 @@ VIEWS.acquista = async function (v) {
       h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Il tuo pacchetto"),
         h("div", { class: "row", style: "align-items:flex-start" }, h("h2", { style: "margin:0" }, p.name), h("div", { class: "price" }, euro(p.price_eur), p.recurring ? h("small", null, "/mese") : null)),
         p.description ? h("p", { class: "small" }, p.description) : null,
-        h("div", { class: "small muted" }, [lessonsLabel(p.lessons), p.recurring ? "1 mese, rinnovabile" : "valido " + durLabel(p.duration) + " dall'acquisto"].filter(Boolean).join(" · "))),
+        h("div", { class: "small muted" }, [lessonsLabel(p.lessons), p.recurring ? "1 mese, rinnovabile" : "valido " + durLabel(p.duration) + " dal pagamento"].filter(Boolean).join(" · "))),
       h("div", { class: "card" }, h("div", { class: "eyebrow" }, "Come vuoi pagare?"),
         h("div", { class: "opts" }, [["bonifico", "Bonifico", "entro 3 giorni"], ["contanti", "Contanti", "in presenza, alla prossima lezione"]].map(function (o) {
           return h("button", { class: "opt" + (method === o[0] ? " on" : ""), onclick: function () { method = o[0]; draw(); } }, h("strong", null, o[1]), h("span", null, o[2]));
         }))),
       method === "bonifico" ? ibanBox(st, p.price_eur, causale) : null,
-      method === "contanti" ? h("div", { class: "tip", style: "margin-bottom:14px" }, "Paghi in contanti direttamente a Lorena alla prossima lezione. Il pacchetto è attivo da subito.") : null,
+      method === "contanti" ? h("div", { class: "tip", style: "margin-bottom:14px" }, "Paghi in contanti direttamente a Lorena alla prima lezione: puoi prenotarla subito. Il pacchetto si attiva quando Lorena registra il pagamento e quella lezione verrà scalata dal pacchetto.") : null,
       h("button", { class: "btn block", disabled: method ? null : true, onclick: async function (e) {
         e.target.disabled = true;
         try {
           await q(sb.rpc("purchase_plan", { p_plan: p.id, p_method: method }));
           go("abbonamenti");
-          modal("Acquisto confermato!", [
-            h("p", { style: "margin-top:0" }, "«" + p.name + "» è attivo. Lorena è stata avvisata."),
-            method === "bonifico" ? ibanBox(st, p.price_eur, causale) : h("p", { class: "muted" }, "Ricordati di portare " + euro(p.price_eur) + " in contanti alla prossima lezione."),
-            p.lessons ? h("p", { class: "small muted" }, "Le lezioni incluse si scalano da sole quando prenoti dal calendario.") : null
+          modal("Acquisto registrato", [
+            h("p", { style: "margin-top:0" }, "Lorena è stata avvisata. «" + p.name + "» si attiva appena riceve il pagamento: ti arriverà una notifica."),
+            method === "bonifico" ? ibanBox(st, p.price_eur, causale) : h("p", { class: "muted" }, "Porta " + euro(p.price_eur) + " in contanti alla prima lezione. Puoi già prenotarla: verrà scalata dal pacchetto."),
+            p.lessons ? h("p", { class: "small muted" }, "Dopo l'attivazione le lezioni incluse si scalano da sole quando prenoti dal calendario.") : null
           ]);
         } catch (er) { fail(er); e.target.disabled = false; }
       } }, "Conferma acquisto · " + euro(p.price_eur)),
-      h("p", { class: "small muted", style: "text-align:center" }, "Confermando, il pacchetto si attiva subito e il pagamento resta da saldare finché Lorena non lo registra.")
+      h("p", { class: "small muted", style: "text-align:center" }, "Il pacchetto si attiva quando Lorena registra il pagamento. La validità parte da quel giorno.")
     ]);
   };
   draw();
