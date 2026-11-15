@@ -1,6 +1,6 @@
 /* Service worker: rete prima, cache come riserva per i file dell'app */
-var CACHE = "lr-v7";
-var SHELL = ["./", "index.html", "style.css?v=6", "app.js?v=6", "manifest.webmanifest", "icon-192.png"];
+var CACHE = "lr-v8";
+var SHELL = ["./", "index.html", "style.css?v=8", "app.js?v=8", "manifest.webmanifest", "icon-192.png"];
 self.addEventListener("install", function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); })); self.skipWaiting(); });
 self.addEventListener("activate", function (e) {
   e.waitUntil(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); })); }));
@@ -31,7 +31,7 @@ self.addEventListener("push", function (e) {
   var d = {};
   try { d = e.data ? e.data.json() : {}; } catch (x) { d = { body: e.data ? e.data.text() : "" }; }
   e.waitUntil(Promise.all([
-    self.registration.showNotification(d.title || "LR Personal Training", { body: d.body || "", icon: "icon-192.png", tag: d.tag, data: { url: d.url || "./" } }),
+    self.registration.showNotification(d.title || "Lorena Rigoni", { body: d.body || "", icon: "icon-192.png", tag: d.tag, data: { url: d.url || "./" } }),
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (cs) { cs.forEach(function (c) { c.postMessage({ type: "notif" }); }); })
   ]));
 });

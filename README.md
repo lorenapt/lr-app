@@ -1,2 +1,2 @@
 # lr-app
-LR Personal Training - app clienti
+Lorena Rigoni · Personal Trainer - app clienti

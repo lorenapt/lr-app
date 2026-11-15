@@ -1,4 +1,6 @@
-/* LR Personal Training — app clienti (PWA) */
+/* Lorena Rigoni · Personal Trainer — app clienti (PWA) */
+var LOGO_SVG = '<svg viewBox="35 35 330 330" aria-hidden="true"><path fill="currentColor" d="M365 200 364.9 231.7 364.8 244.1 364.6 253.5 364.3 261.3 364.0 268.2 363.6 274.3 363.1 279.9 362.5 285.0 361.8 289.8 361.1 294.3 360.2 298.5 359.3 302.5 358.3 306.2 357.3 309.8 356.1 313.2 354.9 316.5 353.6 319.6 352.2 322.5 350.7 325.4 349.1 328.1 347.4 330.6 345.7 333.1 343.8 335.5 341.9 337.7 339.9 339.9 337.7 341.9 335.5 343.8 333.1 345.7 330.6 347.4 328.1 349.1 325.4 350.7 322.5 352.2 319.6 353.6 316.5 354.9 313.2 356.1 309.8 357.3 306.2 358.3 302.5 359.3 298.5 360.2 294.3 361.1 289.8 361.8 285.0 362.5 279.9 363.1 274.3 363.6 268.2 364.0 261.3 364.3 253.5 364.6 244.1 364.8 231.7 364.9 200 365 168.2 364.9 155.8 364.8 146.4 364.6 138.6 364.3 131.7 364.0 125.6 363.6 120.0 363.1 114.9 362.5 110.1 361.8 105.6 361.1 101.4 360.2 97.4 359.3 93.7 358.3 90.1 357.3 86.7 356.1 83.4 354.9 80.3 353.6 77.4 352.2 74.5 350.7 71.8 349.1 69.3 347.4 66.8 345.7 64.4 343.8 62.2 341.9 60.1 339.9 58.0 337.7 56.1 335.5 54.2 333.1 52.5 330.6 50.8 328.1 49.2 325.4 47.7 322.5 46.3 319.6 45.0 316.5 43.8 313.2 42.6 309.8 41.6 306.2 40.6 302.5 39.7 298.5 38.9 294.3 38.1 289.8 37.4 285.0 36.9 279.9 36.4 274.3 35.9 268.2 35.6 261.3 35.3 253.5 35.1 244.1 35.0 231.7 35 200 35.0 168.2 35.1 155.8 35.3 146.4 35.6 138.6 35.9 131.7 36.4 125.6 36.9 120.0 37.4 114.9 38.1 110.1 38.9 105.6 39.7 101.4 40.6 97.4 41.6 93.7 42.6 90.1 43.8 86.7 45.0 83.4 46.3 80.3 47.7 77.4 49.2 74.5 50.8 71.8 52.5 69.3 54.2 66.8 56.1 64.4 58.0 62.2 60.1 60.1 62.2 58.0 64.4 56.1 66.8 54.2 69.3 52.5 71.8 50.8 74.5 49.2 77.4 47.7 80.3 46.3 83.4 45.0 86.7 43.8 90.1 42.6 93.7 41.6 97.4 40.6 101.4 39.7 105.6 38.9 110.1 38.1 114.9 37.4 120.0 36.9 125.6 36.4 131.7 35.9 138.6 35.6 146.4 35.3 155.8 35.1 168.2 35.0 200 35 231.7 35.0 244.1 35.1 253.5 35.3 261.3 35.6 268.2 35.9 274.3 36.4 279.9 36.9 285.0 37.4 289.8 38.1 294.3 38.9 298.5 39.7 302.5 40.6 306.2 41.6 309.8 42.6 313.2 43.8 316.5 45.0 319.6 46.3 322.5 47.7 325.4 49.2 328.1 50.8 330.6 52.5 333.1 54.2 335.5 56.1 337.7 58.0 339.9 60.1 341.9 62.2 343.8 64.4 345.7 66.8 347.4 69.3 349.1 71.8 350.7 74.5 352.2 77.4 353.6 80.3 354.9 83.4 356.1 86.7 357.3 90.1 358.3 93.7 359.3 97.4 360.2 101.4 361.1 105.6 361.8 110.1 362.5 114.9 363.1 120.0 363.6 125.6 364.0 131.7 364.3 138.6 364.6 146.4 364.8 155.8 364.9 168.2ZM152.2 103.4Q152.2 100.7 150.3 98.7Q148.3 96.8 145.6 96.8Q142.9 96.8 141.0 98.7Q139.1 100.7 139.1 103.4V276.6Q139.1 294.1 148.3 303.9Q157.1 313.4 171.8 313.4Q186.1 313.4 194.6 304.3Q203.0 295.1 203.0 279.4V210.6Q203.0 199.9 210.3 192.8Q217.8 185.5 229.5 185.5Q242.3 185.5 249.2 194.1Q250.9 196.2 253.5 196.5Q256.2 196.8 258.3 195.1Q260.5 193.4 260.8 190.7Q261.1 188.0 259.4 185.9Q248.6 172.5 229.5 172.5Q212.5 172.5 201.2 183.4Q190.0 194.3 190.0 210.6V279.4Q190.0 300.3 171.8 300.3Q152.2 300.3 152.2 276.6Z"/></svg>';
+function logo(cls) { return h("div", { class: cls, html: LOGO_SVG }); }
 "use strict";
 var SB_URL = "https://rrvjfrreakpomarkjoqv.supabase.co";
 var SB_KEY = "sb_publishable_8CIg1mkj4ADyQEtWGJhtvQ_kjI92qEx";
@@ -128,8 +130,8 @@ function lineChart(points, unit) {
   });
   var d = pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1); }).join(" ");
   var svg = '<svg class="chart" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none">' +
-    '<path d="' + d + '" fill="none" stroke="#B7787F" stroke-width="2.5" vector-effect="non-scaling-stroke"/>' +
-    pts.map(function (p) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="#B7787F"/>'; }).join("") + "</svg>";
+    '<path d="' + d + '" fill="none" stroke="#1F2A3D" stroke-width="2.5" vector-effect="non-scaling-stroke"/>' +
+    pts.map(function (p) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="#1F2A3D"/>'; }).join("") + "</svg>";
   return h("div", null, h("div", { html: svg }),
     h("div", { class: "row small muted" }, h("span", null, fmtDate(points[0].x) + " · " + n2(points[0].y) + " " + unit),
       h("span", null, fmtDate(points[points.length - 1].x) + " · " + n2(points[points.length - 1].y) + " " + unit)));
@@ -168,9 +170,9 @@ function renderLogin(msg) {
       if (r.error) { err.textContent = traduci(r.error.message); return; }
       afterLogin(r.data.user);
     } },
-    h("div", { class: "mono" }, "LR"),
-    h("h1", null, "Lorena Rigoni"),
-    h("div", { class: "tag" }, "Personal Training"),
+    logo("mono"),
+    h("h1", { class: "wm" }, "lorena rigoni"),
+    h("div", { class: "tag" }, "personal trainer"),
     field("Username", "lu", "text", "", { autocomplete: "username", autocapitalize: "none", autocorrect: "off" }),
     field("Password", "lp", "password", "", { autocomplete: "current-password" }),
     h("button", { class: "btn block", id: "lb", type: "submit" }, "Accedi"),
@@ -181,7 +183,7 @@ function renderLogin(msg) {
 /* ---------- primo accesso: privacy e nuova password ---------- */
 function gateShell(children) {
   root.innerHTML = "";
-  root.appendChild(h("div", { class: "login", style: "justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 40px)" }, h("div", { class: "mono" }, "LR"), children));
+  root.appendChild(h("div", { class: "login", style: "justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 40px)" }, logo("mono"), children));
 }
 async function renderPrivacy() {
   var txt = "";
@@ -234,6 +236,22 @@ function showPrivacyText() {
 async function logout() { await unregisterPush(); S.pushOk = false; await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
 
 /* ---------- shell ---------- */
+var TAB_ICONS = {
+  allenamento: "M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z",
+  lezioni: "M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 10h16M9 3v4M15 3v4",
+  agenda: "M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 10h16M9 3v4M15 3v4",
+  abbonamenti: "M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 10h18M7 15h4",
+  scadenze: "M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 10h18M7 15h4",
+  progressi: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  profilo: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+  clienti: "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21a7 7 0 0 1 14 0M16 3.5a4 4 0 0 1 0 7.5M18 14a7 7 0 0 1 4 7",
+  esercizi: "M6 8v8M3 10v4M18 8v8M21 10v4M6 12h12"
+};
+function tabIcon(id, fallback) {
+  var d = TAB_ICONS[id];
+  if (!d) return h("span", { class: "ic" }, fallback);
+  return h("span", { class: "ic", html: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' + d + '" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>' });
+}
 var ADMIN_TABS = [["clienti", "Clienti", "♡"], ["agenda", "Agenda", "◷"], ["esercizi", "Esercizi", "◇"], ["scadenze", "Scadenze", "€"], ["profilo", "Profilo", "○"]];
 var CLIENT_TABS = [["allenamento", "Oggi", "♡"], ["lezioni", "Lezioni", "◷"], ["abbonamenti", "Abbonamenti", "€"], ["progressi", "Progressi", "↗"], ["profilo", "Profilo", "○"]];
 function go(tab, view) { S.tab = tab; S.view = view || null; render(); window.scrollTo(0, 0); }
@@ -245,10 +263,10 @@ async function render() {
   var tabs = S.me.role === "admin" ? ADMIN_TABS : CLIENT_TABS;
   root.appendChild(main);
   root.appendChild(h("nav", { class: "tabs" }, tabs.map(function (t) {
-    return h("button", { class: S.tab === t[0] ? "on" : "", onclick: function () { go(t[0]); } }, h("span", { class: "ic" }, t[2]), t[1]);
+    return h("button", { class: S.tab === t[0] ? "on" : "", onclick: function () { go(t[0]); } }, tabIcon(t[0], t[2]), t[1]);
   })));
   main.appendChild(h("div", { class: "top" },
-    h("div", { class: "brand" }, "LR", h("small", null, "Personal Training")),
+    h("div", { class: "brand" }, logo("logo"), h("div", null, "lorena rigoni", h("small", null, "personal trainer"))),
     h("div", { class: "topr" }, h("span", { class: "small muted" }, S.me.full_name || S.me.username), bellBtn())));
   updateBell();
   var body = h("div"); main.appendChild(body);
@@ -1330,7 +1348,7 @@ function pushCard(showOn) {
     } }, "Invia una notifica di prova") : null);
   var txt = { off: "Attiva le notifiche: ti avvisiamo quando si libera un posto, quando una lezione viene spostata e il giorno prima della lezione.",
     install: "Per ricevere le notifiche aggiungi l'app alla schermata Home (istruzioni in Profilo) e aprila da lì.",
-    denied: "Le notifiche sono bloccate su questo telefono. Puoi riattivarle da Impostazioni → Notifiche → LR Training." }[st];
+    denied: "Le notifiche sono bloccate su questo telefono. Puoi riattivarle da Impostazioni → Notifiche → LorenaPT." }[st];
   if (S.me.role === "admin" && st === "off") txt = "Attiva le notifiche per sapere subito quando una cliente prenota o disdice.";
   return h("div", { class: "card freed small" }, h("p", { style: "margin:0" }, txt),
     st === "off" ? h("button", { class: "btn sm", style: "margin-top:10px", onclick: async function (e) {
