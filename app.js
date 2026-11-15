@@ -233,7 +233,7 @@ function showPrivacyText() {
     modal("Informativa privacy", h("div", { class: "small", style: "white-space:pre-wrap" }, st.privacy_text || "Informativa non ancora disponibile."));
   }).catch(fail);
 }
-async function logout() { await unregisterPush(); S.pushOk = false; await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
+async function logout() { stopRest(); keepAwake(false); await unregisterPush(); S.pushOk = false; await sb.auth.signOut(); S.user = S.me = null; renderLogin(); }
 
 /* ---------- shell ---------- */
 var TAB_ICONS = {
@@ -257,7 +257,8 @@ var CLIENT_TABS = [["allenamento", "Oggi", "♡"], ["lezioni", "Lezioni", "◷"]
 function go(tab, view) { S.tab = tab; S.view = view || null; render(); window.scrollTo(0, 0); }
 function openView(view) { S.view = view; render(); window.scrollTo(0, 0); }
 async function render() {
-  stopRest();
+  stopRest(true);
+  keepAwake(!!(S.view && S.view.name === "workout"));
   root.innerHTML = "";
   var main = h("div", { class: "wrap" });
   var tabs = S.me.role === "admin" ? ADMIN_TABS : CLIENT_TABS;
@@ -276,6 +277,7 @@ async function render() {
     var out = await fn(S.view || {});
     body.innerHTML = ""; add(body, out);
     if (S.offline) body.insertBefore(h("div", { class: "offline" }, "Sei offline: stai vedendo i dati salvati sul telefono."), body.firstChild);
+    restoreRest();
   } catch (e) {
     body.innerHTML = "";
     if (isNetErr(e)) body.appendChild(h("div", { class: "card empty" }, "Sei offline: questa sezione si aggiorna appena torna la connessione."));
@@ -920,23 +922,87 @@ VIEWS.allenamento = async function () {
 };
 
 /* --- allenamento: salvataggio automatico, ✓ per serie, timer di recupero, offline --- */
-var REST = { t: null, end: 0 };
-function stopRest() { if (REST.t) clearInterval(REST.t); REST.t = null; var b = document.getElementById("restbar"); if (b) b.remove(); }
-function startRest(sec, label) {
-  stopRest();
-  REST.end = Date.now() + sec * 1000;
+var REST = { t: null, end: 0, label: "", beeps: [] };
+/* suono di fine recupero (Web Audio): programmato in anticipo, così suona puntuale anche se la pagina rallenta */
+var AC = null;
+function audioCtx() {
+  try {
+    if (!AC) { var C = window.AudioContext || window.webkitAudioContext; if (!C) return null; AC = new C(); }
+    if (AC.state === "suspended") AC.resume();
+    return AC;
+  } catch (e) { return null; }
+}
+function scheduleBeep(atMs) {
+  cancelBeep();
+  var ac = audioCtx(); if (!ac) return;
+  var t0 = ac.currentTime + Math.max(0, (atMs - Date.now()) / 1000);
+  [[0, 880], [0.22, 1175]].forEach(function (n) {
+    try {
+      var o = ac.createOscillator(), g = ac.createGain();
+      o.type = "sine"; o.frequency.value = n[1];
+      g.gain.setValueAtTime(0.0001, t0 + n[0]);
+      g.gain.exponentialRampToValueAtTime(0.35, t0 + n[0] + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[0] + 0.32);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t0 + n[0]); o.stop(t0 + n[0] + 0.36);
+      REST.beeps.push(o);
+    } catch (e) { /* niente */ }
+  });
+}
+function cancelBeep() { REST.beeps.forEach(function (o) { try { o.stop(); } catch (e) { /* già finito */ } }); REST.beeps = []; }
+/* schermo acceso durante l'allenamento (Wake Lock) */
+var WAKE = { want: false, lock: null };
+async function keepAwake(on) {
+  WAKE.want = on;
+  try {
+    if (on && !WAKE.lock && navigator.wakeLock && document.visibilityState === "visible") {
+      WAKE.lock = await navigator.wakeLock.request("screen");
+      WAKE.lock.addEventListener("release", function () { WAKE.lock = null; });
+    } else if (!on && WAKE.lock) { var l = WAKE.lock; WAKE.lock = null; await l.release(); }
+  } catch (e) { WAKE.lock = null; }
+}
+/* iPhone: l'audio si sblocca solo dopo un tocco; se il timer è stato ripristinato, il primo tocco riattiva il suono */
+["touchend", "click"].forEach(function (ev) {
+  document.addEventListener(ev, function () { if (REST.t && !REST.beeps.length && REST.end > Date.now() && audioCtx()) scheduleBeep(REST.end); }, { passive: true });
+});
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState !== "visible") return;
+  if (WAKE.want) keepAwake(true);
+  if (REST.t || document.getElementById("restbar")) return;
+  restoreRest();
+});
+/* timer di recupero: l'orario di fine è salvato sul telefono, così sopravvive alla chiusura dell'app */
+function stopRest(keep) {
+  if (REST.t) clearInterval(REST.t); REST.t = null; cancelBeep();
+  var b = document.getElementById("restbar"); if (b) b.remove();
+  if (!keep) lsDel("lr-rest");
+}
+function restoreRest() {
+  var r = lsGet("lr-rest");
+  if (!r || !r.end) return;
+  if (r.end < Date.now() - 60000) { lsDel("lr-rest"); return; }
+  showRest(r.end, r.label || "", false);
+}
+function startRest(sec, label) { showRest(Date.now() + sec * 1000, label, true); }
+function showRest(end, label, fresh) {
+  stopRest(true);
+  REST.end = end; REST.label = label;
+  lsSet("lr-rest", { end: end, label: label });
+  if (REST.end > Date.now()) scheduleBeep(REST.end);
   var rt = h("div", { class: "rt" });
   var bar = h("div", { class: "restbar", id: "restbar" },
     h("div", null, h("div", { class: "small" }, "Recupero · " + label), rt),
     h("div", { class: "row", style: "gap:6px" },
-      h("button", { class: "btn ghost sm", onclick: function () { REST.end += 15000; tick(); } }, "+15″"),
-      h("button", { class: "btn sm", onclick: stopRest }, "Salta")));
+      h("button", { class: "btn ghost sm", onclick: function () { REST.end += 15000; lsSet("lr-rest", { end: REST.end, label: REST.label }); scheduleBeep(REST.end); if (!REST.t) { bar.classList.remove("end"); REST.t = setInterval(tick, 500); } tick(); } }, "+15″"),
+      h("button", { class: "btn sm", onclick: function () { stopRest(); } }, "Salta")));
   var tick = function () {
     var left = Math.max(0, Math.round((REST.end - Date.now()) / 1000));
     rt.textContent = Math.floor(left / 60) + ":" + pad2(left % 60);
     if (left <= 0 && REST.t) {
       clearInterval(REST.t); REST.t = null; bar.classList.add("end"); rt.textContent = "Via, prossima serie!";
+      lsDel("lr-rest");
       if (navigator.vibrate) navigator.vibrate([250, 120, 250]);
+      if (!REST.beeps.length && Date.now() - REST.end < 3000) scheduleBeep(Date.now());
       setTimeout(function () { if (!REST.t) { var b = document.getElementById("restbar"); if (b === bar) bar.remove(); } }, 5000);
     }
   };
